@@ -191,16 +191,34 @@ fi
 
 # ---------------------------------------------------------------------------
 step "Persistent logs"
-# By default the journal lives in RAM and is wiped by every reboot — so after a
-# power cut, the log of what the rig was doing when it died is gone. That is
-# exactly the log you need. A directory is all systemd requires to keep it.
-if [[ -d /var/log/journal ]]; then
-  ok "journal already persistent"
+# The journal defaults to memory on Raspberry Pi OS, so every reboot erases the
+# log of what the rig was doing before it — which is exactly the log wanted
+# after an unexpected one. Creating /var/log/journal is not enough on its own:
+# with Storage=auto journald only adopts the directory at startup, and a size
+# cap matters on an SD card, so both are set explicitly.
+JOURNAL_CONF=/etc/systemd/journald.conf.d/viabot-persistent.conf
+sudo mkdir -p /etc/systemd/journald.conf.d /var/log/journal
+sudo tee "$JOURNAL_CONF" >/dev/null <<'CONF'
+# Installed by ViaBot survey rig setup.sh.
+[Journal]
+Storage=persistent
+# Enough history to cover several survey walks without filling the card.
+SystemMaxUse=200M
+SystemMaxFileSize=20M
+CONF
+sudo systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1 || true
+sudo systemctl restart systemd-journald
+sudo journalctl --flush >/dev/null 2>&1 || true
+sleep 1
+
+# Verify rather than assume: the point of this step is that it can be relied on
+# after a power cut, and a step that only claims to have worked is worthless.
+if sudo journalctl --header 2>/dev/null | grep -q "/var/log/journal" \
+   || [[ -n "$(sudo find /var/log/journal -name '*.journal' -print -quit 2>/dev/null)" ]]; then
+  ok "journal is persistent and will survive reboots"
+  info "after an unexpected reboot: sudo journalctl -b -1 -e"
 else
-  sudo mkdir -p /var/log/journal
-  sudo systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1 || true
-  sudo systemctl kill --kill-who=main --signal=SIGUSR1 systemd-journald 2>/dev/null || true
-  ok "journal will now survive reboots (/var/log/journal)"
+  warn "journal does not appear to be persistent yet; it may need a reboot"
 fi
 
 # ---------------------------------------------------------------------------
