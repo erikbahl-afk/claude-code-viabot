@@ -9,6 +9,25 @@ So a number of things this software depends on are **expectations, not facts**.
 `scripts/preflight.sh` answers all of them in one pass. Run it and paste the
 output before trusting any of the below.
 
+## Proven end to end, 2026-09-11
+
+A walk of the office produced, with nobody pressing anything during it:
+
+| | |
+|---|---|
+| Runnable | 85.7% of 314 s walked |
+| Dead zones | 1, lasting 45 s at 100% loss (an antenna unplugged deliberately) |
+| Latency | 30 / 46 / 205 ms min / median / max |
+| Clip | 8.5 MB, 60 s, opening at 14:17:06 — ten seconds before the outage |
+
+The burned-in clock at the start of the clip matched the moment the link
+dropped, which is the whole premise of the rig: a bad measurement resolves to
+the right moment of footage without anyone marking it.
+
+The result was recovered *after* the fact via `POST /api/runs/<id>/analyse`,
+because the Pi lost power during the original wrap-up. That path is therefore
+also proven.
+
 ## Established by the first real walk, 2026-09-11
 
 The rig recorded a walk, detected a dead zone (an antenna unplugged for 45 s),
