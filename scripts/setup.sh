@@ -190,6 +190,20 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+step "Persistent logs"
+# By default the journal lives in RAM and is wiped by every reboot — so after a
+# power cut, the log of what the rig was doing when it died is gone. That is
+# exactly the log you need. A directory is all systemd requires to keep it.
+if [[ -d /var/log/journal ]]; then
+  ok "journal already persistent"
+else
+  sudo mkdir -p /var/log/journal
+  sudo systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1 || true
+  sudo systemctl kill --kill-who=main --signal=SIGUSR1 systemd-journald 2>/dev/null || true
+  ok "journal will now survive reboots (/var/log/journal)"
+fi
+
+# ---------------------------------------------------------------------------
 step "systemd services"
 install_unit() {
   local name="$1" body="$2"

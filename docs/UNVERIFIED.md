@@ -9,6 +9,22 @@ So a number of things this software depends on are **expectations, not facts**.
 `scripts/preflight.sh` answers all of them in one pass. Run it and paste the
 output before trusting any of the below.
 
+## Established by the first real walk, 2026-09-11
+
+The rig recorded a walk, detected a dead zone (an antenna unplugged for 45 s),
+picked the right video and offset, and began cutting a clip. Then the Pi lost
+power mid-cut, which exposed two things worth keeping in mind:
+
+- **The Pi has no RTC, so log timestamps after a reboot are wrong until NTP
+  catches up.** In this case the journal's first entry read 14:15:01 while
+  `uptime -s` said 14:20:25 — five minutes apart, same boot. When reading logs
+  around a power loss, trust `uptime -s` over the stamps.
+- **The journal was not persistent**, so the log of the moments before the
+  power loss was gone. `setup.sh` now creates `/var/log/journal`.
+
+Both database durability and interrupted-run recovery were changed as a result;
+see the commit for 2026-09-11.
+
 ## Still open
 
 | | Status | If the assumption is wrong |

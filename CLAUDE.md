@@ -59,6 +59,15 @@ the filtergraph once against a synthetic lavfi source and falls back to copy
 mode if ffmpeg refuses it. Keep that fallback: losing the burned-in clock is an
 inconvenience, losing every frame is a wasted trip to a garage.
 
+**This rig loses power for real.** It runs off a battery through a
+screw-terminal splice, and it has already died mid-operation more than once.
+SQLite therefore runs `synchronous=FULL`, not NORMAL — under NORMAL a commit is
+acknowledged before it reaches the card, and a completed walk came back with its
+samples intact but no result recorded. At one row a second the cost is not
+measurable. For the same reason an interrupted run is analysed on the next
+startup rather than merely closed: everything up to the cut is good data, and
+discarding it means driving back to the garage.
+
 **Timestamps are the product.** Video correlation depends entirely on the system
 clock, and the Pi has no RTC. Preserve `clock_synced` reporting on samples, the
 control page, and the start-of-run warning.
@@ -97,7 +106,7 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 125 tests, no camera or rig needed
+.venv/bin/python -m pytest        # 127 tests, no camera or rig needed
 ```
 
 Most of the suite runs anywhere: workers are tested through their parsing and

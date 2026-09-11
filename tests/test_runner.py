@@ -131,3 +131,57 @@ def test_startup_closes_a_run_left_open_by_a_power_cut(config, storage):
         assert storage.active_run() is None
     finally:
         survey.shutdown()
+
+
+def test_an_interrupted_run_is_analysed_not_discarded(config, storage, monkeypatch):
+    """Power dies mid-walk. Everything recorded up to that point is good data,
+    and throwing it away means driving back to the garage."""
+    import threading
+
+    from viabot_survey.runner import SurveyRunner
+
+    base = time.time() - 300
+    storage.create_run("cut-off", started_at=base)
+    for offset in range(100):
+        dead = 40 <= offset < 70
+        storage.add_sample("cut-off", base + offset,
+                           rtt_ms=None if dead else 45.0,
+                           loss_pct=100.0 if dead else 0.0,
+                           status="dead" if dead else "good")
+
+    survey = SurveyRunner(config, storage)
+    done = threading.Event()
+    original = survey.analyse_run
+
+    def watched(*args, **kwargs):
+        try:
+            return original(*args, **kwargs)
+        finally:
+            done.set()
+
+    monkeypatch.setattr(survey, "analyse_run", watched)
+    try:
+        survey.start()
+        assert done.wait(timeout=10), "the interrupted run was never analysed"
+    finally:
+        survey.shutdown()
+
+    run = storage.get_run("cut-off")
+    assert run["ended_at"] is not None
+    assert run["runnable_pct"] == 70.0          # 30 of 100 seconds unusable
+    zones = storage.list_dead_zones("cut-off")
+    assert len(zones) == 1
+    assert zones[0]["duration_s"] == 30.0
+    assert any("cut off mid-walk" in e["message"] for e in storage.recent_events())
+
+
+def test_recovery_is_silent_when_nothing_was_interrupted(config, storage):
+    from viabot_survey.runner import SurveyRunner
+
+    survey = SurveyRunner(config, storage)
+    try:
+        survey.start()
+        assert storage.active_run() is None
+    finally:
+        survey.shutdown()
+    assert not any("cut off" in e["message"] for e in storage.recent_events())

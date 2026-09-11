@@ -144,7 +144,14 @@ class Storage:
             conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
+            # FULL, not NORMAL. Under NORMAL a commit is acknowledged before it
+            # reaches the card, so a power cut loses transactions the app was
+            # told had succeeded — which is how a completed walk came back with
+            # its samples intact but no result recorded. This rig runs off a
+            # battery through a screw-terminal splice and loses power for real,
+            # so the durability is worth more than the speed. At one row a
+            # second the cost is not measurable.
+            conn.execute("PRAGMA synchronous=FULL")
             conn.execute("PRAGMA foreign_keys=ON")
             self._local.conn = conn
         return conn
