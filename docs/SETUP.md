@@ -14,12 +14,24 @@ ssh viabot@garage-surveyor-01.local
 
 Note the spelling: `garage-survey**or**-01`.
 
-## 2. Clone and run setup
+## 2. Clone and check the hardware first
 
 ```bash
 sudo apt update && sudo apt install -y git
 git clone https://github.com/erikbahl-afk/claude-code-viabot.git
 cd claude-code-viabot
+./scripts/preflight.sh
+```
+
+This is read-only and changes nothing. Paste its whole output into a Claude
+session before going further — see [UNVERIFIED.md](UNVERIFIED.md) for why. The
+section that matters most is the first: if `wlan0` cannot run as an access
+point, the phone-based control plane does not work as built, and it is much
+better to find that out now than after provisioning.
+
+## 3. Run setup
+
+```bash
 ./scripts/setup.sh
 ```
 
@@ -41,7 +53,7 @@ What it does, in order:
 Re-running it is safe, and is the right move after editing the `ap:` section of
 the config.
 
-## 3. Characterise the camera
+## 4. Characterise the camera
 
 The handoff never established what the camera can actually do — the one test
 capture defaulted to 352×288.
@@ -57,7 +69,7 @@ that into `config/config.yaml`, then:
 sudo systemctl restart viabot-survey
 ```
 
-## 4. Try it
+## 5. Try it
 
 On your phone, join the Wi-Fi network you just named. The dashboard should open
 by itself. If it does not, browse to <http://192.168.50.1/>.
@@ -77,7 +89,7 @@ Then start a run, walk around the building for two minutes, tap MARK a couple of
 times, stop it, and open **Runs → Report**. If the report shows your marks with
 a video file and offset next to them, the whole chain works.
 
-## 5. Optional — modem signal statistics
+## 6. Optional — modem signal statistics
 
 Worth doing: RSRP/RSRQ/SINR are the most informative coverage data available and
 cost no cellular data. The router's API is not characterised yet, so:
@@ -88,7 +100,7 @@ python3 scripts/probe_router.py --password '<router admin password>'
 
 See [ROUTER.md](ROUTER.md).
 
-## 6. Optional — throughput testing
+## 7. Optional — throughput testing
 
 Needs your own iperf3 server, and spends real cellular data. Read
 [IPERF_SERVER.md](IPERF_SERVER.md) first.

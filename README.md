@@ -53,8 +53,14 @@ rig that spends real cellular data.
 sudo apt update && sudo apt install -y git
 git clone https://github.com/erikbahl-afk/claude-code-viabot.git
 cd claude-code-viabot
+./scripts/preflight.sh     # read-only; paste the output into a Claude session
 ./scripts/setup.sh
 ```
+
+Run `preflight.sh` first. Several things this rig depends on have never actually
+been verified on the hardware — most importantly whether the Pi's Wi-Fi can run
+as an access point at all, which the entire control plane assumes. It changes
+nothing and takes a few seconds.
 
 The script installs packages, builds a virtualenv, asks you for a Wi-Fi
 password, configures the access point and captive portal, installs the systemd
@@ -102,6 +108,7 @@ experience: **[docs/WORKFLOW.md](docs/WORKFLOW.md)**.
 | | |
 |---|---|
 | [docs/SETUP.md](docs/SETUP.md) | First-time provisioning, in detail |
+| [docs/UNVERIFIED.md](docs/UNVERIFIED.md) | What has never been checked on the real hardware |
 | [docs/WORKFLOW.md](docs/WORKFLOW.md) | How to develop this with Claude if you're new to git |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the pieces fit together and why |
 | [docs/HARDWARE.md](docs/HARDWARE.md) | The physical rig: power chain, network chain, part numbers |

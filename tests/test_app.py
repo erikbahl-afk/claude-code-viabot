@@ -1,3 +1,4 @@
+import re
 import time
 
 import pytest
@@ -134,8 +135,24 @@ def test_samples_csv_exports_the_video_pointer(client, storage):
     assert response.status_code == 200
     text = response.get_data(as_text=True)
     header, first = text.strip().splitlines()[:2]
-    assert "video_file" in header and "iso_time" in header
+    assert "video_file" in header
+    # Both clocks, explicitly: video segments are named in UTC, but the
+    # operator reads local time. A bare timestamp would be ambiguous.
+    assert "iso_utc" in header and "iso_local" in header
+    assert "undervoltage" in header
     assert "20260911-140000.mkv" in first
+
+
+def test_exported_timestamps_carry_their_zone(client, storage):
+    run_id = client.post("/api/run/start", json={}).get_json()["run"]["id"]
+    storage.add_sample(run_id, 1_700_000_000.0, rtt_ms=50.0, status="good")
+    client.post("/api/run/stop")
+    rows = client.get(f"/api/runs/{run_id}/samples.csv").get_data(as_text=True)
+    header, first = rows.strip().splitlines()[:2]
+    fields = dict(zip(header.split(","), first.split(",")))
+    assert fields["iso_utc"] == "2023-11-14T22:13:20Z"
+    # Local column must state its offset rather than leaving it to be guessed.
+    assert re.search(r"[+-]\d{4}$", fields["iso_local"])
 
 
 def test_csv_export_of_an_unknown_run_404s(client):

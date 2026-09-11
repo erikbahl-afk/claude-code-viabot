@@ -81,6 +81,61 @@ def default_route_interface() -> str | None:
     return None
 
 
+# Bit positions in the word `vcgencmd get_throttled` returns. The "ever"
+# bits latch since boot; the low bits are live.
+THROTTLE_BITS = {
+    "undervoltage_now": 0,
+    "freq_capped_now": 1,
+    "throttled_now": 2,
+    "undervoltage_since_boot": 16,
+    "freq_capped_since_boot": 17,
+    "throttled_since_boot": 18,
+}
+
+
+def power_health() -> dict[str, Any] | None:
+    """Read the Pi's undervoltage flags.
+
+    This matters more here than on a desk-bound Pi. The rig's power chain ends
+    in a plain screw-terminal splice at the end of a twelve-foot cable that gets
+    carried around a garage, and a brownout there looks *exactly* like a
+    coverage problem in the data: the Pi throttles, measurements go strange, and
+    nothing in a ping trace says "your power is loose". Surfacing it turns a
+    confusing survey into an obvious one.
+    """
+    output = _run(["vcgencmd", "get_throttled"])
+    if not output or "=" not in output:
+        return None
+    try:
+        value = int(output.strip().split("=", 1)[1], 0)
+    except ValueError:
+        return None
+    flags = {name: bool(value & (1 << bit)) for name, bit in THROTTLE_BITS.items()}
+    flags["raw"] = hex(value)
+    flags["ok"] = not any(v for k, v in flags.items() if k != "raw" and isinstance(v, bool))
+    return flags
+
+
+def timezone_info() -> dict[str, Any]:
+    """Local zone name and UTC offset.
+
+    Reported because the Pi's timezone was never set during imaging, and video
+    segment filenames (UTC) versus the burned-in clock (local) only make sense
+    if you know which zone the rig thinks it is in.
+    """
+    now = time.time()
+    offset = -(time.altzone if time.localtime(now).tm_isdst else time.timezone)
+    sign = "+" if offset >= 0 else "-"
+    magnitude = abs(offset)
+    configured = _run(["timedatectl", "show", "-p", "Timezone", "--value"])
+    return {
+        "name": time.strftime("%Z", time.localtime(now)),
+        "configured": configured.strip() if configured else None,
+        "utc_offset_s": offset,
+        "utc_offset": f"{sign}{magnitude // 3600:02d}{(magnitude % 3600) // 60:02d}",
+    }
+
+
 def cpu_temperature_c() -> float | None:
     try:
         milli = int(Path("/sys/class/thermal/thermal_zone0/temp").read_text().strip())
@@ -119,9 +174,10 @@ def collect(uplink_interface: str = "eth0", ap_interface: str = "wlan0",
     info: dict[str, Any] = {
         "hostname": hostname(),
         "now": time.time(),
-        "timezone": time.strftime("%Z"),
         "uptime_s": uptime_s(),
         "clock_synced": clock_synced(),
+        "timezone_info": timezone_info(),
+        "power": power_health(),
         "cpu_temp_c": cpu_temperature_c(),
         "load_average": load_average(),
         "default_route_dev": default_route_interface(),

@@ -47,8 +47,8 @@ early miscommunication about one — the bag of pigtails is spares.
 | microSD | Samsung 128 GB |
 | Camera | USB, enumerates as `LRCP USB2.0`, USB ID `0bda:3035` (shows as Realtek in `lsusb`); `/dev/video0` plus a secondary `/dev/video1` stream |
 | Router | ViaBot fleet spare, tagged "Reserved-router-.09" / "Remote-reboot works" / "Refurb Date: 8/13/26". Custom OpenWrt/LuCI, hostname `HL`, model `HL7621_S` (MediaTek MT7621, 256 MB RAM / 16 MB flash) |
-| Battery | ViaBot fleet spare, "BMS ok! Nov 2025" / "New Battery 7/22" |
-| DC-DC board | ViaBot in-house, two independent 12 V outputs |
+| Battery | ViaBot fleet spare, "BMS ok! Nov 2025" / "New Battery 7/22". **Capacity unknown** — no Ah/Wh rating was ever read, and no runtime figure exists. |
+| DC-DC board | ViaBot in-house, two independent 12 V outputs. Has unpopulated footprints (DC002/DC003) beyond the two in use — relevant if this ever scales past one modem. |
 
 ## Software environment
 
@@ -80,12 +80,39 @@ only if you enable modem-statistics collection.
 - **No GPIO button is needed any more.** The MARK button on the phone dashboard
   replaces it.
 
+## The splice
+
+There is **no soldered joint anywhere in this power chain**. The Pi's supply
+passes through a plain screw-terminal splice — into the MA4G pigtail's own
+terminal block — at the end of a twelve-foot cable that gets carried around a
+garage. A Wago connector was considered and judged unnecessary; neither Wago
+nor solder is in the final assembly.
+
+This is the most likely physical failure on the rig, and it fails in the worst
+possible way: as an intermittent brownout, which in the data looks exactly like
+a coverage problem. The Pi throttles, measurements go strange, and nothing in a
+ping trace says "your power is loose".
+
+The software now watches for it — `vcgencmd get_throttled` is polled every
+second, stored on every sample as `undervoltage`, shown on the dashboard, and
+logged as an error the moment it trips. That turns a confusing survey into an
+obvious one, but it is detection, not a fix. Before a real survey walk, secure
+that splice mechanically and strain-relieve the cable.
+
 ## Things that will bite you
 
 **The clock.** The Pi has no real-time clock. It learns the time from NTP over
 the cellular link after boot. If it boots without a working uplink, timestamps
 — and therefore every video correlation — are wrong. The dashboard shows
 `Clock synced`; check it before starting a run.
+
+**The timezone was never set during imaging.** Video segment files are named in
+UTC on purpose, so correlation cannot drift if the zone is changed later; the
+clock burned into the picture is local time with its offset printed alongside,
+because that is what you read when matching footage to where you walked. Each
+run records the zone it was recorded in, and every video directory gets a
+`manifest.json` saying which clock is which. `scripts/setup.sh` will offer to
+set the timezone if it is still unset.
 
 **Disk.** Recording 720p10 uses roughly 0.5–1 GB per hour. The 128 GB card is
 plenty for a day, but the camera worker refuses to start below the

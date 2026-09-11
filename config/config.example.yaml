@@ -138,8 +138,18 @@ camera:
 
 # ----------------------------------------------------------------------------
 # Thresholds that colour the live status banner and classify dead zones.
+#
+# THESE NUMBERS ARE PROVISIONAL. No latency ceiling, throughput floor or
+# loss tolerance has ever been established for the robot this rig exists to
+# support — they are a starting point, not a requirement. Do one real survey
+# walk, look at what a working stretch and a genuinely bad stretch actually
+# measure, and set them from that.
+#
+# Set `provisional: false` once they mean something; the dashboard stops
+# captioning them as guesses.
 # ----------------------------------------------------------------------------
 thresholds:
+  provisional: true
   degraded_loss_pct: 5
   degraded_rtt_ms: 200
   bad_loss_pct: 20

@@ -31,7 +31,11 @@ CREATE TABLE IF NOT EXISTS runs (
     label       TEXT NOT NULL DEFAULT '',
     notes       TEXT NOT NULL DEFAULT '',
     config_json TEXT,
-    git_commit  TEXT
+    git_commit  TEXT,
+    -- Recorded so a run stays interpretable if the Pi's timezone is changed
+    -- later: video segment names are UTC, the burned-in clock is local.
+    tz_name     TEXT,
+    tz_offset_s INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS samples (
@@ -52,6 +56,7 @@ CREATE TABLE IF NOT EXISTS samples (
     video_file      TEXT,
     video_offset_s  REAL,
     clock_synced    INTEGER,
+    undervoltage    INTEGER,
     PRIMARY KEY (run_id, ts)
 );
 CREATE INDEX IF NOT EXISTS idx_samples_run_ts ON samples(run_id, ts);
@@ -95,7 +100,7 @@ CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 SAMPLE_COLUMNS = (
     "rtt_ms", "loss_pct", "jitter_ms", "status", "dns_ms",
     "rsrp", "rsrq", "sinr", "rssi", "band", "cell_id", "tech",
-    "video_file", "video_offset_s", "clock_synced",
+    "video_file", "video_offset_s", "clock_synced", "undervoltage",
 )
 
 
@@ -145,12 +150,14 @@ class Storage:
     # -- runs ----------------------------------------------------------------
 
     def create_run(self, run_id: str, label: str = "", config: dict | None = None,
-                   git_commit: str | None = None, started_at: float | None = None) -> dict:
+                   git_commit: str | None = None, started_at: float | None = None,
+                   tz_name: str | None = None, tz_offset_s: int | None = None) -> dict:
         started = time.time() if started_at is None else started_at
         self._write(
-            "INSERT INTO runs(id, started_at, label, config_json, git_commit) "
-            "VALUES(?, ?, ?, ?, ?)",
-            (run_id, started, label, json.dumps(config or {}), git_commit),
+            "INSERT INTO runs(id, started_at, label, config_json, git_commit, "
+            "tz_name, tz_offset_s) VALUES(?, ?, ?, ?, ?, ?, ?)",
+            (run_id, started, label, json.dumps(config or {}), git_commit,
+             tz_name, tz_offset_s),
         )
         return self.get_run(run_id)
 

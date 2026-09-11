@@ -72,6 +72,7 @@ class SurveyRunner:
         self._dead_streak_s = 0.0
         self._last_sample: dict | None = None
         self._status_seconds: dict[str, float] = {}
+        self._undervoltage_warned = False
 
         uplink = config["uplink"]
         self.ping = PingWorker(
@@ -195,9 +196,12 @@ class SurveyRunner:
             video_dir = self.config.video_dir / run_id
             # Redacted: the run record is handed straight back over the API,
             # and the database is collected onto laptops.
+            tz = sysinfo.timezone_info()
             self.storage.create_run(run_id, label=label,
                                     config=redact(self.config.as_dict()),
-                                    git_commit=git_commit)
+                                    git_commit=git_commit,
+                                    tz_name=tz.get("name"),
+                                    tz_offset_s=tz.get("utc_offset_s"))
             self._run = {"id": run_id, "started_at": time.time(), "label": label,
                          "video_dir": video_dir}
             self._dead_streak_s = 0.0
@@ -287,6 +291,7 @@ class SurveyRunner:
         status = classify(loss, rtt, self.config["thresholds"], self._dead_streak_s)
         dns = self.dns.snapshot() if self.dns.enabled else {}
         signal = self.router.sample_fields() if self.router.enabled else {}
+        undervoltage = self._check_power()
 
         sample: dict[str, Any] = {
             "ts": now,
@@ -296,6 +301,7 @@ class SurveyRunner:
             "status": status,
             "dns_ms": dns.get("resolve_ms"),
             "dead_streak_s": round(self._dead_streak_s, 1),
+            "undervoltage": undervoltage,
             **signal,
         }
         self._last_sample = sample
@@ -311,8 +317,30 @@ class SurveyRunner:
                 status=status, dns_ms=dns.get("resolve_ms"),
                 video_file=video_file, video_offset_s=offset,
                 clock_synced=1 if sysinfo.clock_synced() else 0,
+                undervoltage=undervoltage,
                 **signal)
         return sample
+
+    def _check_power(self) -> int | None:
+        """Flag a sagging supply, once, loudly.
+
+        A brownout on the rig's screw-terminal splice degrades measurements in
+        ways that read as bad coverage, so it has to be distinguishable in the
+        data rather than left to be discovered afterwards.
+        """
+        power = sysinfo.power_health()
+        if power is None:
+            return None
+        live = bool(power.get("undervoltage_now") or power.get("throttled_now"))
+        if live and not self._undervoltage_warned:
+            self._undervoltage_warned = True
+            self.storage.add_event(
+                "UNDERVOLTAGE: the Pi's supply is sagging. Check the screw-terminal "
+                "splice and the USB-C cable — readings taken now are unreliable.",
+                level="error", source="power", run_id=self.active_run_id)
+        elif not live:
+            self._undervoltage_warned = False
+        return 1 if live else 0
 
     # -- reporting -----------------------------------------------------------
 
