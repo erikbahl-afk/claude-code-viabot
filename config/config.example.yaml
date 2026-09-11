@@ -150,7 +150,33 @@ camera:
   min_free_disk_mb: 2000
 
 # ----------------------------------------------------------------------------
-# Thresholds that colour the live status banner and classify dead zones.
+# What counts as a dead zone, and what footage to cut around it.
+#
+# THESE NUMBERS ARE PROVISIONAL — a placeholder for "very bad connection" until
+# a real survey walk says what the robot actually cannot tolerate.
+#
+# A stretch becomes a dead zone when the link is at least this bad for at least
+# `min_duration_s`. Loss OR latency is enough; they do not both have to be true.
+# ----------------------------------------------------------------------------
+deadzone:
+  provisional: true
+  loss_pct_at_least: 80
+  or_rtt_ms_at_least: 1500
+  # Shorter blips are noise — walking behind a pillar drops a packet or two.
+  min_duration_s: 5
+  # Two dead zones closer together than this are reported as one. Without this
+  # a single bad ramp becomes six entries with six nearly identical clips.
+  merge_gap_s: 10
+  # Footage cut around each zone. The clip runs pre_roll + the zone's own
+  # length + post_roll, so clips vary in length with the dead zone.
+  pre_roll_s: 10
+  post_roll_s: 5
+  # Cut clips when the run ends. Uses stream copy, so it is quick, at the cost
+  # of each clip starting at the nearest keyframe (within a second or two).
+  extract_clips: true
+
+# ----------------------------------------------------------------------------
+# Thresholds that colour the live status banner.
 #
 # THESE NUMBERS ARE PROVISIONAL. No latency ceiling, throughput floor or
 # loss tolerance has ever been established for the robot this rig exists to
@@ -158,8 +184,8 @@ camera:
 # walk, look at what a working stretch and a genuinely bad stretch actually
 # measure, and set them from that.
 #
-# Set `provisional: false` once they mean something; the dashboard stops
-# captioning them as guesses.
+# These only drive the colour you see while walking; `deadzone:` above is what
+# decides the results. Set `provisional: false` once they mean something.
 # ----------------------------------------------------------------------------
 thresholds:
   provisional: true
@@ -188,16 +214,6 @@ web:
 storage:
   # Relative paths resolve against the repository root.
   data_dir: data
-  # Marks you can tap with one thumb while walking. Edit freely.
-  mark_categories:
-    - Ramp
-    - Entrance
-    - Elevator
-    - Stairwell
-    - Level change
-    - Pillar/corner
-    - Charging dock
-    - Other
 
 # ----------------------------------------------------------------------------
 # Over-the-air updates (git pull from GitHub over the cellular link).

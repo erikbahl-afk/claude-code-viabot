@@ -13,7 +13,7 @@ output before trusting any of the below.
 
 | | Status | If the assumption is wrong |
 |---|---|---|
-| **`wlan0` can run as an access point** | **Partly answered.** A preflight run confirms `wlan0` exists, is *not* rfkill-blocked, and its driver advertises AP mode; no `disable-wifi` overlay is set. But the interface is `DOWN` and NetworkManager reports it `unavailable`, which has not been explained yet — most likely NM's own Wi-Fi radio switch is off (`nmcli radio wifi`). Not yet proven to actually come up as an AP. | The control plane needs rethinking — likely a USB Wi-Fi dongle, or controlling the rig over the wired LAN. |
+| **`wlan0` actually serves an access point** | **Nearly settled.** The radio is present, unblocked, advertises AP mode, and the `unavailable` state turned out to be NetworkManager's own Wi-Fi switch being off — `nmcli radio wifi on` moved it to `disconnected`, the healthy idle state. `setup_ap.sh` now does that itself. What has still never been done is bringing up an actual AP and joining it from a phone. | The control plane needs rethinking — likely a USB Wi-Fi dongle, or controlling the rig over the wired LAN. |
 | **Power headroom** | The battery's Ah/Wh rating has never been read and no runtime figure exists. Undervoltage flags are polled every second and stored per sample — which detects a sagging supply but cannot predict how long the pack lasts. | Survey walks get cut short with no warning. |
 
 ## Answered by the preflight run of 2026-09-11

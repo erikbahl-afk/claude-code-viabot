@@ -1,94 +1,79 @@
 {% extends "base.html" %}
-{% block nav %}<a href="/runs">Runs</a>{% endblock %}
 
 {% block content %}
+<!-- Anything that would stop the survey being worth anything shouts here,
+     above everything else. Hidden when all is well. -->
+<div id="alert" class="alert" hidden>
+  <div class="alert-title" id="alertTitle">Camera not recording</div>
+  <div class="alert-detail" id="alertDetail"></div>
+</div>
+
+<!-- Health first: a rig whose camera has died still reports connection
+     quality perfectly happily, and the whole walk is wasted. -->
+<div class="health" id="health"></div>
+
 <div id="banner" class="banner unknown">
-  <div class="label" id="statusLabel">Starting…</div>
-  <div class="detail" id="statusDetail">Waiting for the first measurement</div>
-  <div class="metrics">
-    <div class="metric"><div class="v" id="mRtt">—</div><div class="k">RTT ms</div></div>
-    <div class="metric"><div class="v" id="mLoss">—</div><div class="k">Loss %</div></div>
-    <div class="metric"><div class="v" id="mSignal">—</div><div class="k" id="mSignalKey">Signal</div></div>
+  <div class="banner-row">
+    <span class="label" id="statusLabel">Starting…</span>
+    <span class="readout"><b id="mRtt">—</b> ms · <b id="mLoss">—</b>% loss</span>
   </div>
+  <canvas id="ribbon" class="ribbon" height="10" aria-label="Recent connection quality"></canvas>
 </div>
 
-<div class="chart-card">
-  <canvas id="spark" width="700" height="96"></canvas>
-  <div class="chart-legend"><span id="chartLeft">3 min ago</span><span id="chartRight">now</span></div>
-</div>
+<!-- Before a run -->
+<section class="card" id="paneIdle" hidden>
+  <label class="field-label" for="runLabel">Location</label>
+  <input type="text" id="runLabel" placeholder="e.g. Sunset Garage, Level 2"
+         maxlength="120" autocomplete="off" autocapitalize="words">
+  <p class="hint" id="labelHint">Name the location before starting.</p>
+  <button class="btn start" id="btnStart" disabled>START</button>
+</section>
 
-<section class="card">
-  <h2>Run</h2>
-  <div id="runIdle">
-    <input type="text" id="runLabel" placeholder="Label, e.g. Sunset Garage L2" maxlength="120">
-    <div style="height:10px"></div>
-    <button class="btn primary" id="btnStart">Start run</button>
+<!-- During a run -->
+<section class="card" id="paneRunning" hidden>
+  <div class="run-head">
+    <span class="run-label mono" id="runLabelShown">—</span>
+    <span class="pill" id="runPill">walking</span>
   </div>
-  <div id="runActive" hidden>
-    <dl class="kv">
-      <dt>Run</dt><dd class="mono" id="runId">—</dd>
-      <dt>Elapsed</dt><dd id="runElapsed">—</dd>
-      <dt>Marks</dt><dd id="runMarks">0</dd>
-      <dt>Dead-zone time</dt><dd id="runDead">0 s</dd>
-      <dt>Cellular data used</dt><dd id="runData">0 MB</dd>
-    </dl>
-    <div style="height:12px"></div>
-    <button class="btn stop" id="btnStop">Stop run</button>
+  <div class="run-stats">
+    <div><b id="runWalked">0:00</b><span>walked</span></div>
+    <div><b id="runDead">0</b><span>dead zones</span></div>
+    <div><b id="runRunnable">—</b><span>% runnable</span></div>
+  </div>
+  <div class="btn-row">
+    <button class="btn pause" id="btnPause">PAUSE</button>
+    <button class="btn end" id="btnEnd">END</button>
   </div>
 </section>
 
-<section class="card" id="markCard" hidden>
-  <h2>Mark this spot</h2>
-  <div class="chips" id="chips">
-    {% for category in mark_categories %}
-    <button class="chip" data-category="{{ category }}">{{ category }}</button>
-    {% endfor %}
-  </div>
-  <input type="text" id="markNote" placeholder="Optional note" maxlength="200">
-  <div style="height:10px"></div>
-  <button class="btn mark" id="btnMark">MARK</button>
-  <ul class="list" id="markList"></ul>
+<!-- After a run: just enough to know whether to walk it again. -->
+<section class="card wrapup" id="paneWrapup" hidden>
+  <h2>Survey finished</h2>
+  <div class="big-stat"><b id="wrapPct">—</b><span>% of the walk was runnable</span></div>
+  <dl class="kv">
+    <dt>Dead zones</dt><dd id="wrapZones">—</dd>
+    <dt>Longest</dt><dd id="wrapLongest">—</dd>
+    <dt>Walked</dt><dd id="wrapWalked">—</dd>
+    <dt>Clips saved</dt><dd id="wrapClips" class="mono">—</dd>
+  </dl>
+  <p class="hint">Full results and video are on the Pi — pull them to a laptop.</p>
+  <button class="btn" id="btnDone">Done</button>
 </section>
 
 <details class="card">
-  <summary>Subsystems</summary>
-  <dl class="kv" id="workerList"></dl>
-  <div class="btn-row" style="margin-top:12px">
-    <button class="btn small" id="btnIperf">Run throughput test</button>
-  </div>
-</details>
-
-<details class="card">
-  <summary>Rig status</summary>
+  <summary>Rig detail</summary>
   <dl class="kv" id="sysList"></dl>
-</details>
-
-<p class="small muted" id="provisionalNote" hidden>
-  Status colours use provisional thresholds — they are a starting point, not
-  robot requirements. Set them from real survey data, then turn off
-  <span class="mono">thresholds.provisional</span>.
-</p>
-
-<details class="card">
-  <summary>Software update</summary>
-  <dl class="kv" id="updateList"></dl>
+  <ul class="list" id="eventList"></ul>
   <div class="btn-row" style="margin-top:12px">
     <button class="btn small" id="btnCheckUpdate">Check for updates</button>
     <button class="btn small" id="btnApplyUpdate" disabled>Apply update</button>
   </div>
-  <p class="small muted" id="updateHint">
-    Merge the pull request on GitHub first, then check here.
-  </p>
+  <p class="hint" id="updateHint">Merge the pull request on GitHub first.</p>
 </details>
 
-<details class="card">
-  <summary>Recent events</summary>
-  <ul class="list" id="eventList"></ul>
-</details>
-
-<p class="small muted" style="text-align:center">
-  Dashboard at <span class="mono">http://{{ ap_address }}/</span>
-  or <span class="mono">http://{{ portal_hostname }}/</span>
+<p class="foot">
+  <span class="mono">http://{{ ap_address }}/</span> · v{{ version }}
+  <span id="provisionalNote" hidden><br>Dead-zone thresholds are provisional.</span>
 </p>
 {% endblock %}
 

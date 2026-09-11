@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import logging
 import threading
 import time
@@ -108,14 +109,8 @@ def create_app(config: Config, runner: SurveyRunner, storage: Storage,
         return render_template(
             "dashboard.html",
             version=__version__,
-            mark_categories=config["storage"]["mark_categories"],
             ap_address=config["ap"]["address"],
-            portal_hostname=config["web"]["portal_hostname"],
         )
-
-    @app.route("/runs")
-    def runs_page():
-        return render_template("runs.html", version=__version__)
 
     # ---- status ------------------------------------------------------------
 
@@ -150,38 +145,44 @@ def create_app(config: Config, runner: SurveyRunner, storage: Storage,
         try:
             run = runner.start_run(label=str(label)[:120],
                                    git_commit=updater.current_commit())
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         except RuntimeError as exc:
             return jsonify({"error": str(exc)}), 409
         return jsonify({"run": run})
+
+    @app.route("/api/run/pause", methods=["POST"])
+    def api_run_pause():
+        if not runner.pause():
+            return jsonify({"error": "no run in progress, or already paused"}), 409
+        return jsonify({"paused": True})
+
+    @app.route("/api/run/resume", methods=["POST"])
+    def api_run_resume():
+        if not runner.resume():
+            return jsonify({"error": "no run in progress, or not paused"}), 409
+        return jsonify({"paused": False})
 
     @app.route("/api/run/stop", methods=["POST"])
     def api_run_stop():
         run = runner.stop_run()
         if run is None:
             return jsonify({"error": "no run in progress"}), 409
-        return jsonify({"run": run})
+        return jsonify({"run": run, "wrapup": runner.status().get("wrapup")})
 
-    @app.route("/api/mark", methods=["POST"])
-    def api_mark():
-        body = request.get_json(silent=True) or {}
-        try:
-            mark = runner.add_mark(category=str(body.get("category", ""))[:64],
-                                   note=str(body.get("note", ""))[:500])
-        except RuntimeError as exc:
-            return jsonify({"error": str(exc)}), 409
-        return jsonify({"mark": mark})
+    @app.route("/api/run/wrapup/dismiss", methods=["POST"])
+    def api_dismiss_wrapup():
+        runner.clear_wrapup()
+        return jsonify({"cleared": True})
 
-    @app.route("/api/marks")
-    def api_marks():
-        run_id = request.args.get("run_id") or runner.active_run_id
-        if not run_id:
-            return jsonify({"marks": []})
-        return jsonify({"marks": storage.list_marks(run_id)})
-
-    @app.route("/api/marks/<int:mark_id>", methods=["DELETE"])
-    def api_delete_mark(mark_id: int):
-        storage.delete_mark(mark_id)
-        return jsonify({"deleted": mark_id})
+    @app.route("/api/runs/<run_id>/analyse", methods=["POST"])
+    def api_reanalyse(run_id: str):
+        """Re-run detection on a finished run after changing the thresholds."""
+        if storage.get_run(run_id) is None:
+            return jsonify({"error": "unknown run"}), 404
+        if run_id == runner.active_run_id:
+            return jsonify({"error": "the run is still in progress"}), 409
+        return jsonify(runner.analyse_run(run_id))
 
     @app.route("/api/iperf/test", methods=["POST"])
     def api_iperf_test():
@@ -231,22 +232,23 @@ def create_app(config: Config, runner: SurveyRunner, storage: Storage,
                         headers={"Content-Disposition":
                                  f'attachment; filename="{run_id}-samples.csv"'})
 
-    @app.route("/api/runs/<run_id>/marks.csv")
-    def api_export_marks(run_id: str):
+    @app.route("/api/runs/<run_id>/deadzones.csv")
+    def api_export_dead_zones(run_id: str):
         if storage.get_run(run_id) is None:
             return jsonify({"error": "unknown run"}), 404
-        columns = ["ts", "iso_utc", "iso_local", "category", "note", "status",
-                   "video_file", "video_offset_s"]
+        columns = ["idx", "start_utc", "start_local", "duration_s",
+                   "worst_loss_pct", "worst_rtt_ms", "video_file",
+                   "video_offset_s", "clip_path", "clip_error"]
         buffer = io.StringIO()
         writer = csv.writer(buffer)
         writer.writerow(columns)
-        for mark in storage.list_marks(run_id):
-            mark["iso_utc"] = _iso_utc(mark["ts"])
-            mark["iso_local"] = _iso(mark["ts"])
-            writer.writerow([mark.get(name) for name in columns])
+        for zone in storage.list_dead_zones(run_id):
+            zone["start_utc"] = _iso_utc(zone["start_ts"])
+            zone["start_local"] = _iso(zone["start_ts"])
+            writer.writerow([zone.get(name) for name in columns])
         return Response(buffer.getvalue(), mimetype="text/csv",
                         headers={"Content-Disposition":
-                                 f'attachment; filename="{run_id}-marks.csv"'})
+                                 f'attachment; filename="{run_id}-deadzones.csv"'})
 
     @app.route("/api/runs/<run_id>/report")
     def api_run_report(run_id: str):
@@ -349,61 +351,34 @@ def _iso_utc(ts: float | None) -> str:
 
 
 def build_report(storage: Storage, run: dict) -> dict:
-    """Summarise a finished run: where it was bad, and which marks line up.
+    """A finished run's result: how much of the walk was usable, and where not.
 
-    Contiguous stretches of bad/dead samples become "problem areas", each
-    carrying the video file and offset to review and any operator marks that
-    fall inside it — which is the question the rig exists to answer.
+    Read on a laptop after the walk, not on the phone during it.
     """
     samples = list(storage.iter_samples(run["id"]))
-    marks = storage.list_marks(run["id"])
+    zones = storage.list_dead_zones(run["id"])
     total = len(samples)
 
     status_counts: dict[str, int] = {}
-    rtts = [s["rtt_ms"] for s in samples if s["rtt_ms"] is not None]
     for sample in samples:
         key = sample["status"] or "unknown"
         status_counts[key] = status_counts.get(key, 0) + 1
 
-    problem_areas = []
-    current: dict | None = None
-    for sample in samples:
-        is_problem = sample["status"] in ("bad", "dead")
-        if is_problem and current is None:
-            current = {"start_ts": sample["ts"], "end_ts": sample["ts"],
-                       "worst_status": sample["status"],
-                       "video_file": sample["video_file"],
-                       "video_offset_s": sample["video_offset_s"]}
-        elif is_problem:
-            current["end_ts"] = sample["ts"]
-            if sample["status"] == "dead":
-                current["worst_status"] = "dead"
-        elif current is not None:
-            problem_areas.append(_close_area(current, marks))
-            current = None
-    if current is not None:
-        problem_areas.append(_close_area(current, marks))
+    stored = json.loads(run["summary_json"]) if run.get("summary_json") else {}
+    for zone in zones:
+        zone["start_local"] = _iso(zone["start_ts"])
+        zone["start_utc"] = _iso_utc(zone["start_ts"])
 
     return {
         "run": run,
+        "summary": stored,
         "sample_count": total,
-        "duration_s": round((run.get("ended_at") or time.time()) - run["started_at"], 1),
+        "walked_s": stored.get("walked_s", round(total * 1.0, 1)),
+        "runnable_pct": run.get("runnable_pct"),
+        "elapsed_s": round((run.get("ended_at") or time.time()) - run["started_at"], 1),
         "status_counts": status_counts,
-        "status_pct": {k: round(100.0 * v / total, 1) for k, v in status_counts.items()} if total else {},
-        "rtt_ms": {
-            "min": round(min(rtts), 1) if rtts else None,
-            "avg": round(sum(rtts) / len(rtts), 1) if rtts else None,
-            "max": round(max(rtts), 1) if rtts else None,
-        },
-        "marks": marks,
-        "problem_areas": problem_areas,
+        "status_pct": {k: round(100.0 * v / total, 1)
+                       for k, v in status_counts.items()} if total else {},
+        "dead_zones": zones,
         "throughput": storage.list_throughput(run["id"]),
     }
-
-
-def _close_area(area: dict, marks: list[dict]) -> dict:
-    area["duration_s"] = round(area["end_ts"] - area["start_ts"] + 1, 1)
-    area["start_iso"] = _iso(area["start_ts"])
-    area["end_iso"] = _iso(area["end_ts"])
-    area["marks"] = [m for m in marks if area["start_ts"] <= m["ts"] <= area["end_ts"]]
-    return area

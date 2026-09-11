@@ -36,7 +36,7 @@ scp -r "$HOST:$REMOTE_DIR/video/$RUN_ID" "$DEST/" || {
 echo "==> Measurements"
 # The CSV exports come from the running dashboard so the columns match the UI.
 PI_HOST="${HOST#*@}"
-for what in samples marks; do
+for what in samples deadzones; do
   if curl -fsS --max-time 30 \
        "http://$PI_HOST/api/runs/$RUN_ID/$what.csv" -o "$DEST/$RUN_ID/$what.csv"; then
     echo "    saved $DEST/$RUN_ID/$what.csv"

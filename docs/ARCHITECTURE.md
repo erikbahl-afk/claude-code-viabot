@@ -110,9 +110,13 @@ This is the mechanism the whole rig exists for.
    clock at which it started: `20260911-143005.mkv`.
 2. `CameraWorker.locate(ts)` finds the newest segment whose start is at or
    before `ts`, and returns `(filename, ts - start)`.
-3. Every sample and every mark stores that pair at the moment it is recorded.
-4. The run report groups contiguous bad samples into problem areas and carries
-   the pair forward, so the report says "open `20260911-143005.mkv` at 123 s".
+3. Every sample stores that pair at the moment it is recorded.
+4. When the run ends, `deadzones.py` groups unusable samples into zones and
+   cuts a clip for each: `pre_roll` seconds of approach, the whole zone however
+   long it ran, then `post_roll` seconds of recovery. Cutting uses stream copy,
+   so it is fast; the cost is that a clip starts at the nearest keyframe, which
+   is what the pre-roll absorbs. A zone near a segment boundary is served by
+   concatenating the two files first.
 
 In `overlay` mode the clock is also burned into the picture, derived from each
 frame's PTS plus the capture start time — not from render time, so the label
@@ -132,12 +136,15 @@ writes.
 |---|---|---|
 | `runs` | per walk | id, start/end, label, the config in force, the git commit |
 | `samples` | 1 Hz | RTT, loss, jitter, status, DNS, modem fields, video pointer, clock-sync flag |
-| `marks` | on tap | timestamp, category, note, status at that moment, video pointer |
+| `dead_zones` | at run end | start, end, duration, worst loss/latency, clip path |
 | `throughput` | sparse | iperf3 results and bytes spent |
 | `events` | sparse | worker warnings and errors, shown on the dashboard |
 
-Throughput and marks are separate tables precisely because they are sparse —
-it keeps the once-a-second row narrow.
+Throughput and dead zones are separate tables precisely because they are
+sparse — it keeps the once-a-second row narrow. Dead zones are stored rather
+than recomputed on every read, because the clips on disk are tied to them; a
+finished run can still be re-analysed with different thresholds, which replaces
+the stored set rather than adding to it.
 
 ## Classification
 
@@ -169,7 +176,22 @@ browser then polls `/api/health` until the service answers again.
   one rig, physically present.
 - **No video over Wi-Fi.** Streaming 720p over the AP while measuring is a
   distraction; video is collected over the wired LAN afterwards.
-- **No GPS.** It does not work in a concrete garage. Visual correlation plus
-  operator marks is the localisation strategy, and it is the more reliable one.
-- **No GPIO button.** The phone in your hand is a better button, and it needs no
-  hardware that has not been bought yet.
+- **No GPS.** It does not work in a concrete garage. The video *is* the
+  localisation: you recognise the place by looking at it.
+- **No marking of any kind.** The rig detects dead zones itself, so there is
+  nothing to press while walking — and therefore no GPIO button to source
+  either. The operator's hands stay free and their eyes stay on the garage.
+- **No results on the phone** beyond a single percentage. Reading a report on a
+  4-inch screen in a car park is worse than reading it on a laptop afterwards,
+  and serving video over the AP would compete with the recording.
+
+## Why the percentage is a percentage of *time*
+
+There is no indoor positioning, so the rig cannot know how much *ground* was
+covered — only how many seconds elapsed. Walk slowly through a dead zone and it
+looks worse than it is; walk briskly and it looks better.
+
+Two things keep this honest. Pause stops both measuring and recording, so time
+standing still is absent from the data rather than counted as coverage. And the
+per-zone detail — how many, how long, and the footage of each — is what you
+actually act on; the percentage is the number you report to someone else.

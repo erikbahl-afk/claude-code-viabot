@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import sysinfo
+from . import deadzones, sysinfo
 from .config import Config, redact
 from .router_client import build_client
 from .storage import Storage
@@ -73,6 +73,12 @@ class SurveyRunner:
         self._last_sample: dict | None = None
         self._status_seconds: dict[str, float] = {}
         self._undervoltage_warned = False
+        self._paused = False
+        self._wrapup: dict | None = None
+        # Counted live so the operator sees zones accumulate while walking.
+        # The authoritative figure is recomputed from stored samples at the end.
+        self._dead_zone_estimate = 0
+        self._in_dead_zone = False
 
         uplink = config["uplink"]
         self.ping = PingWorker(
@@ -186,13 +192,15 @@ class SurveyRunner:
     # -- runs ----------------------------------------------------------------
 
     def start_run(self, label: str = "", git_commit: str | None = None) -> dict:
+        # A run without a location name is just a timestamp, and a week later
+        # nobody knows which garage it was.
+        slug = slugify(label)
+        if not slug:
+            raise ValueError("a location name is required to start a run")
         with self._lock:
             if self._run:
                 raise RuntimeError("a run is already in progress")
-            run_id = time.strftime("%Y%m%d-%H%M%S")
-            slug = slugify(label)
-            if slug:
-                run_id = f"{run_id}-{slug}"
+            run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{slug}"
 
             video_dir = self.config.video_dir / run_id
             # Redacted: the run record is handed straight back over the API,
@@ -207,6 +215,10 @@ class SurveyRunner:
                          "video_dir": video_dir}
             self._dead_streak_s = 0.0
             self._status_seconds = {}
+            self._paused = False
+            self._wrapup = None
+            self._dead_zone_estimate = 0
+            self._in_dead_zone = False
 
             if not sysinfo.clock_synced():
                 # Worth shouting about: without a disciplined clock the video
@@ -225,39 +237,122 @@ class SurveyRunner:
             return self.storage.get_run(run_id)
 
     def stop_run(self) -> dict | None:
+        """End the run, then work out where the dead zones were."""
         with self._lock:
             run = self._run
             if not run:
                 return None
             self._run = None
+            self._paused = False
 
+        segments = self.camera.segments()
         self.camera.stop()
         self.camera.output_dir = None
         self.storage.end_run(run["id"])
         self.storage.add_event(f"run {run['id']} stopped", source="runner",
                                run_id=run["id"])
+
+        try:
+            self.analyse_run(run["id"], run["video_dir"], segments)
+        except Exception:  # noqa: BLE001 - a failed analysis must not lose the run
+            log.exception("analysis failed for %s", run["id"])
+            self.storage.add_event(
+                "could not analyse the run; the raw samples and video are still "
+                "on disk and it can be re-analysed",
+                level="error", source="runner", run_id=run["id"])
         return self.storage.get_run(run["id"])
+
+    def analyse_run(self, run_id: str, video_dir: Path | None = None,
+                    segments: list | None = None) -> dict:
+        """Find the dead zones, cut their clips, and store the summary.
+
+        Split out from :meth:`stop_run` so a finished run can be re-analysed
+        after the thresholds change, without re-walking the garage.
+        """
+        config = self.config["deadzone"]
+        samples = list(self.storage.iter_samples(run_id))
+        zones = deadzones.find_dead_zones(samples, config)
+        summary = deadzones.summarise(samples, zones)
+
+        if video_dir is None:
+            video_dir = self.config.video_dir / run_id
+        video_dir = Path(video_dir)
+        if segments is None:
+            segments = _segments_on_disk(video_dir)
+
+        if zones and config.get("extract_clips", True) and segments:
+            clip_dir = Path(self.config.data_dir) / "clips" / run_id
+            container = "mp4" if self.config["camera"]["mode"] == "overlay" else "mkv"
+            self.storage.add_event(
+                f"cutting {len(zones)} dead-zone clip(s)", source="runner",
+                run_id=run_id)
+            for zone in zones:
+                deadzones.extract_clip(
+                    zone, segments, video_dir, clip_dir, config,
+                    segment_length_s=float(self.config["camera"]["segment_s"]),
+                    container=container)
+                if zone.clip_error:
+                    self.storage.add_event(
+                        f"dead zone {zone.index}: no clip ({zone.clip_error})",
+                        level="warning", source="runner", run_id=run_id)
+            summary["clip_dir"] = str(clip_dir)
+
+        summary["thresholds_provisional"] = bool(config.get("provisional", False))
+        self.storage.replace_dead_zones(run_id, [z.as_dict() for z in zones])
+        self.storage.set_run_summary(run_id, summary)
+
+        message = (f"run {run_id}: {summary['runnable_pct']}% runnable, "
+                   f"{summary['dead_zone_count']} dead zone(s)"
+                   if summary["runnable_pct"] is not None
+                   else f"run {run_id}: no samples recorded")
+        self.storage.add_event(message, source="runner", run_id=run_id)
+        self._wrapup = {"run_id": run_id, "summary": summary,
+                        "zones": [z.as_dict() for z in zones]}
+        return self._wrapup
 
     @property
     def active_run_id(self) -> str | None:
         with self._lock:
             return self._run["id"] if self._run else None
 
-    def add_mark(self, category: str = "", note: str = "",
-                 ts: float | None = None) -> dict:
+    @property
+    def paused(self) -> bool:
         with self._lock:
-            run = self._run
-        if not run:
-            raise RuntimeError("no run in progress")
-        ts = time.time() if ts is None else ts
-        video_file, offset = self.camera.locate(ts)
-        status = (self._last_sample or {}).get("status")
-        mark_id = self.storage.add_mark(run["id"], ts, category=category, note=note,
-                                        status=status, video_file=video_file,
-                                        video_offset_s=offset)
-        return {"id": mark_id, "run_id": run["id"], "ts": ts, "category": category,
-                "note": note, "status": status, "video_file": video_file,
-                "video_offset_s": offset}
+            return self._paused
+
+    def pause(self) -> bool:
+        """Stop recording and measuring without ending the run.
+
+        Paused time leaves no samples and no video at all, which is the point:
+        the headline result is a percentage of time walked, so standing still
+        in a good spot must not count as coverage. The gap this leaves in the
+        timeline is recognised by the dead-zone detector, which never stitches
+        a zone across it.
+        """
+        with self._lock:
+            if not self._run or self._paused:
+                return False
+            self._paused = True
+            run_id = self._run["id"]
+        self.camera.stop()
+        self._dead_streak_s = 0.0
+        self.storage.add_event("run paused", source="runner", run_id=run_id)
+        return True
+
+    def resume(self) -> bool:
+        with self._lock:
+            if not self._run or not self._paused:
+                return False
+            self._paused = False
+            run_id = self._run["id"]
+            video_dir = self._run["video_dir"]
+        if self.camera.enabled:
+            # A fresh ffmpeg writes a new segment named for the current wall
+            # clock, so correlation still holds across the gap.
+            self.camera.set_output_dir(video_dir)
+            self.camera.start()
+        self.storage.add_event("run resumed", source="runner", run_id=run_id)
+        return True
 
     # -- sampling ------------------------------------------------------------
 
@@ -289,6 +384,8 @@ class SurveyRunner:
         else:
             self._dead_streak_s = 0.0
 
+        self._track_dead_zone({"loss_pct": loss, "rtt_ms": rtt})
+
         status = classify(loss, rtt, self.config["thresholds"], self._dead_streak_s)
         dns = self.dns.snapshot() if self.dns.enabled else {}
         signal = self.router.sample_fields() if self.router.enabled else {}
@@ -309,7 +406,8 @@ class SurveyRunner:
 
         with self._lock:
             run = self._run
-        if run:
+            paused = self._paused
+        if run and not paused:
             video_file, offset = self.camera.locate(now)
             self._status_seconds[status] = self._status_seconds.get(status, 0.0) + SAMPLE_INTERVAL_S
             self.storage.add_sample(
@@ -321,6 +419,17 @@ class SurveyRunner:
                 undervoltage=undervoltage,
                 **signal)
         return sample
+
+    def _track_dead_zone(self, sample: dict) -> None:
+        """Count dead zones as they happen, using the same rule as the report."""
+        config = self.config["deadzone"]
+        unusable = deadzones.is_unusable(sample, config)
+        if unusable and not self._in_dead_zone:
+            if self._dead_streak_s >= float(config.get("min_duration_s", 5)):
+                self._in_dead_zone = True
+                self._dead_zone_estimate += 1
+        elif not unusable:
+            self._in_dead_zone = False
 
     def _check_power(self) -> int | None:
         """Flag a sagging supply, once, loudly.
@@ -350,16 +459,20 @@ class SurveyRunner:
             run = self._run
         if not run:
             return None
-        duration = time.time() - run["started_at"]
+        # Walked time is counted from samples, not the wall clock, so a pause
+        # genuinely does not exist in the numbers.
+        walked_s = sum(self._status_seconds.values())
         return {
             "id": run["id"],
             "label": run["label"],
             "started_at": run["started_at"],
-            "duration_s": round(duration, 1),
+            "paused": self._paused,
+            "walked_s": round(walked_s, 1),
+            "elapsed_s": round(time.time() - run["started_at"], 1),
             "video_dir": str(run["video_dir"]),
-            "mark_count": len(self.storage.list_marks(run["id"])),
             "status_seconds": {k: round(v, 1) for k, v in self._status_seconds.items()},
             "dead_seconds": round(self._status_seconds.get(STATUS_DEAD, 0.0), 1),
+            "dead_zone_estimate": self._dead_zone_estimate,
             "data_used_mb": round(self.storage.run_data_used_bytes(run["id"]) / 1e6, 1),
         }
 
@@ -368,8 +481,83 @@ class SurveyRunner:
             "now": time.time(),
             "sample": self._last_sample or {"status": STATUS_UNKNOWN},
             "run": self.run_summary(),
+            "paused": self.paused,
+            "health": self.health(),
+            "wrapup": self._wrapup,
             "workers": {worker.name: worker.status() for worker in self.workers},
             "iperf_budget_remaining_mb": self.iperf.budget_remaining_mb,
+        }
+
+    def clear_wrapup(self) -> None:
+        self._wrapup = None
+
+    def health(self) -> dict:
+        """The handful of things that must be visible without opening anything.
+
+        A rig whose camera has quietly died is still cheerfully reporting
+        connection quality, and the whole walk is wasted — so camera state is
+        first, and failures say what to do rather than only that something is
+        wrong.
+        """
+        run_active = self.active_run_id is not None and not self.paused
+        camera = self.camera
+        if not camera.enabled:
+            camera_state, camera_detail = "off", "disabled in config"
+        elif camera.state == "failed":
+            camera_state = "fail"
+            camera_detail = camera.error or "recording stopped"
+        elif run_active and not camera.snapshot().get("recording"):
+            camera_state, camera_detail = "fail", "not recording"
+        elif run_active:
+            camera_state, camera_detail = "ok", "recording"
+        else:
+            camera_state, camera_detail = "idle", "ready"
+
+        ping = self.ping
+        if not ping.enabled:
+            link_state, link_detail = "off", "disabled in config"
+        elif ping.state in ("failed", "degraded"):
+            link_state = "fail"
+            link_detail = ping.error or "no replies"
+        else:
+            link_state, link_detail = "ok", "measuring"
+
+        power = sysinfo.power_health()
+        if power is None:
+            power_state, power_detail = "unknown", "not readable"
+        elif power.get("undervoltage_now") or power.get("throttled_now"):
+            power_state, power_detail = "fail", "supply sagging — check the splice"
+        elif power.get("undervoltage_since_boot"):
+            power_state, power_detail = "warn", "dipped earlier"
+        else:
+            power_state, power_detail = "ok", "steady"
+
+        free_mb = camera.snapshot().get("free_disk_mb")
+        if free_mb is None:
+            disk = sysinfo.disk_usage(Path(self.config.data_dir))
+            free_mb = disk["free_mb"]
+        floor = float(self.config["camera"]["min_free_disk_mb"])
+        if free_mb < floor:
+            disk_state, disk_detail = "fail", f"{free_mb / 1000:.1f} GB left"
+        elif free_mb < floor * 3:
+            disk_state, disk_detail = "warn", f"{free_mb / 1000:.1f} GB left"
+        else:
+            disk_state, disk_detail = "ok", f"{free_mb / 1000:.0f} GB free"
+
+        synced = sysinfo.clock_synced()
+        if synced is None:
+            clock_state, clock_detail = "unknown", "cannot tell"
+        elif synced:
+            clock_state, clock_detail = "ok", "synced"
+        else:
+            clock_state, clock_detail = "fail", "NOT synced — timestamps unreliable"
+
+        return {
+            "camera": {"state": camera_state, "detail": camera_detail},
+            "link": {"state": link_state, "detail": link_detail},
+            "power": {"state": power_state, "detail": power_detail},
+            "disk": {"state": disk_state, "detail": disk_detail},
+            "clock": {"state": clock_state, "detail": clock_detail},
         }
 
     def history(self, seconds: float = 180) -> list[dict]:
@@ -387,3 +575,22 @@ class SurveyRunner:
             uplink_interface=self.config["uplink"]["interface"],
             ap_interface=self.config["ap"]["interface"],
             data_dir=Path(self.config.data_dir))
+
+
+def _segments_on_disk(video_dir: Path) -> list[tuple[str, float]]:
+    """Segment (name, start epoch) pairs for a run whose camera worker is gone.
+
+    Re-analysing a finished run has no live CameraWorker to ask, so the segment
+    list is rebuilt from the UTC filenames on disk.
+    """
+    from .workers.camera import segment_start_epoch
+
+    if not video_dir.exists():
+        return []
+    found = []
+    for path in video_dir.iterdir():
+        start = segment_start_epoch(path.name)
+        if start is not None:
+            found.append((path.name, start))
+    found.sort(key=lambda item: item[1])
+    return found

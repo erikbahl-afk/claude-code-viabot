@@ -13,7 +13,7 @@ This page assumes you have never used GitHub before. Follow it literally.
 ```
   You, in a browser                GitHub                    The rig
   ─────────────────                ──────                    ───────
-  "make the MARK button
+  "make the END button
    bigger"            ──────►  Claude pushes a
                                branch and opens
                                a pull request
