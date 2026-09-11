@@ -282,7 +282,9 @@ class SurveyRunner:
 
         if zones and config.get("extract_clips", True) and segments:
             clip_dir = Path(self.config.data_dir) / "clips" / run_id
-            container = "mp4" if self.config["camera"]["mode"] == "overlay" else "mkv"
+            # The effective mode, not the configured one: an overlay that had
+            # to fall back leaves raw MJPEG, which an .mp4 will not hold.
+            container = "mp4" if self.camera.effective_mode == "overlay" else "mkv"
             self.storage.add_event(
                 f"cutting {len(zones)} dead-zone clip(s)", source="runner",
                 run_id=run_id)
@@ -509,7 +511,9 @@ class SurveyRunner:
         elif run_active and not camera.snapshot().get("recording"):
             camera_state, camera_detail = "fail", "not recording"
         elif run_active:
-            camera_state, camera_detail = "ok", "recording"
+            camera_state = "ok"
+            camera_detail = ("recording" if camera.effective_mode == "overlay"
+                             else "recording (no clock overlay)")
         else:
             camera_state, camera_detail = "idle", "ready"
 

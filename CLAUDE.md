@@ -46,6 +46,19 @@ it will silently measure the wrong interface.
 **Don't enable iperf3 by default.** It is the only thing that spends cellular
 data, and the SIM's plan is unknown. Tests assert it ships disabled.
 
+**The drawtext escaping is not a typo.** `ESCAPED_COLON` in `workers/camera.py`
+is two backslashes because a filtergraph is unescaped twice on the way in. One
+backslash makes ffmpeg reject the whole graph, exit before writing a frame, and
+the worker restart it forever — which cost a real survey walk. Single-quoting
+the value instead fails differently ("Both text and text file provided"). If you
+touch that string, run `test_overlay_colons_carry_two_backslashes` and, where
+ffmpeg exists, `test_the_overlay_filtergraph_is_accepted_by_ffmpeg`.
+
+**A broken overlay must never stop the recording.** `overlay_filter()` validates
+the filtergraph once against a synthetic lavfi source and falls back to copy
+mode if ffmpeg refuses it. Keep that fallback: losing the burned-in clock is an
+inconvenience, losing every frame is a wasted trip to a garage.
+
 **Timestamps are the product.** Video correlation depends entirely on the system
 clock, and the Pi has no RTC. Preserve `clock_synced` reporting on samples, the
 control page, and the start-of-run warning.
@@ -84,12 +97,18 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 116 tests, no hardware needed
+.venv/bin/python -m pytest        # 125 tests, no camera or rig needed
 ```
 
-The suite runs anywhere: workers are tested through their parsing and
+Most of the suite runs anywhere: workers are tested through their parsing and
 command-building functions rather than by invoking `ping`/`ffmpeg`/`iperf3`.
-Keep it that way — the container Claude runs in has none of those binaries.
+Keep it that way for new tests.
+
+The exceptions are marked `requires_ffmpeg` and skip when it is absent. They
+exist because the two bugs that actually reached the rig — a filtergraph ffmpeg
+would not parse, and clip cutting that had never run — were both invisible to
+mocks. If you are changing the camera or clip code, install ffmpeg first
+(`apt-get install -y --no-install-recommends ffmpeg`) so they run.
 
 Run the app locally without hijacking your own browser:
 
@@ -99,16 +118,15 @@ Run the app locally without hijacking your own browser:
 
 ## Still open
 
-**Read `docs/UNVERIFIED.md` first.** Nothing in this repository has run on the
-physical rig, and no Claude session has ever had SSH access to it — every fact
-in the handoffs came from Erik pasting terminal output. Several load-bearing
-assumptions are unconfirmed, above all that `wlan0` can run as an access point.
-`scripts/preflight.sh` answers them in one pass; ask Erik to run it and paste
-the output rather than assuming.
+**Read `docs/UNVERIFIED.md` first.** No Claude session has ever had SSH access to
+the rig — every fact comes from Erik pasting terminal output, so verify rather
+than assume. `scripts/preflight.sh` answers most hardware questions in one pass.
+
+The rig now runs: the access point comes up, the captive portal fires, a run
+starts and ends, the camera records with a burned-in clock, and clips are cut.
 
 Specifically open:
 
-- Whether the Pi's Wi-Fi can do AP mode. Blocks the whole control plane.
 - Where modem signal metrics live. The modem appears to do its own NAT and
   present as a plain Ethernet adapter, so the router may have nothing to query;
   `scripts/probe_router.py` probes both the router and the modem.
@@ -118,9 +136,8 @@ Specifically open:
   1500 ms, sustained 5 s). The plan is to set them from one real survey walk.
   Do not quietly treat the current numbers as requirements. A finished run can
   be re-analysed with new ones via `POST /api/runs/<id>/analyse`.
-- Clip extraction has never run against real footage — ffmpeg is not installed
-  in the container Claude runs in, so `plan_clip` is unit-tested but the actual
-  cutting is not.
+- Whether a real garage produces sensible dead zones. The thresholds have never
+  been checked against footage of a place anyone knows.
 
 ## Working style Erik has asked for
 

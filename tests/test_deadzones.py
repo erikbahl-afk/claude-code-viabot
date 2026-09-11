@@ -1,4 +1,8 @@
+import shutil
+import time
 from pathlib import Path
+
+import pytest
 
 from viabot_survey import deadzones
 from viabot_survey.deadzones import DeadZone, find_dead_zones, plan_clip, summarise
@@ -187,3 +191,74 @@ def test_zone_serialises_with_both_clocks():
     assert data["duration_s"] == 10.0
     assert data["start_utc"] == "2023-11-14T22:13:20Z"
     assert data["start_local"].startswith("2023-11-")
+
+
+# ---- against a real ffmpeg, when there is one ------------------------------
+
+requires_ffmpeg = pytest.mark.skipif(
+    shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
+
+SEG_S = 15.0
+
+
+def _make_segments(video_dir: Path, count: int = 2):
+    """Write real video segments named the way the rig names them."""
+    import subprocess
+
+    video_dir.mkdir(parents=True, exist_ok=True)
+    segments = []
+    for i in range(count):
+        start = BASE + i * SEG_S
+        name = time.strftime("%Y%m%dT%H%M%SZ.mkv", time.gmtime(start))
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+             "-f", "lavfi", "-i", "testsrc=size=320x180:rate=10",
+             "-t", str(SEG_S), "-c:v", "libx264", "-preset", "ultrafast",
+             "-g", "20", "-pix_fmt", "yuv420p", str(video_dir / name)],
+            check=True, capture_output=True)
+        segments.append((name, start))
+    return segments
+
+
+@requires_ffmpeg
+def test_a_clip_is_actually_cut(tmp_path):
+    video = tmp_path / "video"
+    segments = _make_segments(video, 1)
+    zone = DeadZone(index=1, start_ts=BASE + 11, end_ts=BASE + 13)
+
+    deadzones.extract_clip(zone, segments, video, tmp_path / "clips", CONFIG,
+                           segment_length_s=SEG_S)
+
+    assert zone.clip_error is None, zone.clip_error
+    clip = Path(zone.clip_path)
+    assert clip.exists() and clip.stat().st_size > 0
+    # Named so a directory of clips is readable without opening any of them.
+    assert clip.name.startswith("deadzone-01-")
+    assert clip.name.endswith("-3s.mp4")
+
+
+@requires_ffmpeg
+def test_a_clip_spanning_two_segments_is_joined(tmp_path):
+    """A dead zone near a segment boundary needs footage from both files. This
+    is the path that is easiest to get wrong and hardest to notice."""
+    video = tmp_path / "video"
+    segments = _make_segments(video, 2)
+    # Ends after the first segment does, so the join path has to run.
+    zone = DeadZone(index=2, start_ts=BASE + 14, end_ts=BASE + 17)
+
+    deadzones.extract_clip(zone, segments, video, tmp_path / "clips", CONFIG,
+                           segment_length_s=SEG_S)
+
+    assert zone.clip_error is None, zone.clip_error
+    clip = Path(zone.clip_path)
+    assert clip.exists() and clip.stat().st_size > 0
+
+    import subprocess
+    duration = float(subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=nw=1:nk=1", str(clip)],
+        capture_output=True, text=True, check=True).stdout.strip())
+    # pre_roll + the zone + post_roll, give or take the keyframe the copy cut
+    # snaps to — which is the slack the pre-roll exists to provide.
+    wanted = zone.duration_s + CONFIG["pre_roll_s"] + CONFIG["post_roll_s"]
+    assert abs(duration - wanted) <= 2.5, f"{duration}s vs {wanted}s"
