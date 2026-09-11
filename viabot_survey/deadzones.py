@@ -278,6 +278,9 @@ def extract_clip(zone: DeadZone, segments: Sequence[tuple[str, float]],
             _cut_joined(spans, duration, output)
     except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
         zone.clip_error = str(exc)[:300]
+        # Do not leave a truncated file behind: a zero-byte .mp4 in the clips
+        # directory looks like a clip until someone tries to play it.
+        output.unlink(missing_ok=True)
         return zone
 
     if not output.exists() or output.stat().st_size == 0:

@@ -166,15 +166,46 @@ class SurveyRunner:
         self._sampler.start()
         self.storage.add_event("survey service started", source="runner")
 
-        # Recover from a power cut mid-walk: an unfinished run in the database
-        # is closed out rather than silently reopened, so its sample timeline
-        # never contains a gap that looks like a dead zone.
+        self._recover_interrupted_run()
+
+    def _recover_interrupted_run(self) -> None:
+        """Salvage a walk the rig was cut off in the middle of.
+
+        An unfinished run in the database means power was lost mid-walk. The
+        run is closed rather than silently reopened, so its sample timeline
+        never contains a gap that would read as a dead zone — but everything up
+        to the interruption is perfectly good data, so it is also analysed.
+        Without that, a power cut costs the whole walk instead of its last few
+        seconds, and someone has to drive back to the garage.
+
+        Runs on a background thread: the analysis cuts video clips, and the
+        dashboard should not be unreachable while that happens.
+        """
         stale = self.storage.active_run()
-        if stale:
-            self.storage.end_run(stale["id"])
-            self.storage.add_event(
-                f"closed run {stale['id']} left open by an unclean shutdown",
-                level="warning", source="runner", run_id=stale["id"])
+        if not stale:
+            return
+        run_id = stale["id"]
+        self.storage.end_run(run_id)
+        self.storage.add_event(
+            f"run {run_id} was cut off mid-walk; analysing what was recorded",
+            level="warning", source="runner", run_id=run_id)
+
+        def salvage() -> None:
+            try:
+                result = self.analyse_run(run_id)
+                summary = result["summary"]
+                if summary.get("runnable_pct") is None:
+                    self.storage.add_event(
+                        f"run {run_id} had no usable samples to analyse",
+                        level="warning", source="runner", run_id=run_id)
+            except Exception:  # noqa: BLE001 - salvage must never block startup
+                log.exception("could not salvage %s", run_id)
+                self.storage.add_event(
+                    f"could not analyse the interrupted run {run_id}; its samples "
+                    "and video are still on disk",
+                    level="error", source="runner", run_id=run_id)
+
+        threading.Thread(target=salvage, name="salvage", daemon=True).start()
 
     def shutdown(self) -> None:
         self._stop.set()
