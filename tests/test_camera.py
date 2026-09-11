@@ -141,3 +141,31 @@ def test_recording_environment_forces_utc(monkeypatch):
     monkeypatch.setenv("TZ", "America/Los_Angeles")
     environment = {**os.environ, "TZ": "UTC"}
     assert environment["TZ"] == "UTC"
+
+
+def test_capture_rate_is_left_to_the_driver_by_default():
+    """The rig's camera advertises 30 fps and only 30 fps. Asking a UVC device
+    for a rate it does not offer makes it keep sending its own while ffmpeg
+    believes otherwise, which skews every timestamp the project depends on."""
+    cmd = CameraWorker(mode="overlay", fps=10, enabled=False).build_command(
+        Path("/tmp"), 1_700_000_000)
+    assert "-framerate" not in cmd
+    joined = " ".join(cmd)
+    # Decimation happens in the filter graph instead, before the encoder.
+    assert "fps=10," in joined
+    assert "-r 10" in joined
+
+
+def test_capture_rate_is_pinned_when_explicitly_configured():
+    cmd = CameraWorker(mode="overlay", fps=10, capture_fps=30,
+                       enabled=False).build_command(Path("/tmp"), 1_700_000_000)
+    assert cmd[cmd.index("-framerate") + 1] == "30"
+
+
+def test_copy_mode_never_asks_the_encoder_to_decimate():
+    """Nothing can be dropped without re-encoding, so copy mode records at
+    whatever rate the camera sends."""
+    joined = " ".join(CameraWorker(mode="copy", fps=10, enabled=False)
+                      .build_command(Path("/tmp"), 1_700_000_000))
+    assert "-c:v copy" in joined
+    assert "fps=" not in joined

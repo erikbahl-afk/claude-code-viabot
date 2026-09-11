@@ -23,6 +23,19 @@ Only the router's front Status page has ever been looked at — no Modem or
 Cellular submenu was ever opened, and nobody has SSH'd into the router. Until
 that changes the rig ships with signal collection **off**.
 
+## What we know so far
+
+A preflight run on the rig traced the next hop past the router to
+**192.168.225.1**, reachable from the Pi. That address is the factory default
+for Quectel RG/RM-series modules, which supports the reading that the modem
+does its own NAT and presents to OpenWrt as a plain Ethernet adapter — so the
+router very likely has no modem to query, and the signal metrics live at that
+address instead.
+
+The quickest check is to open <http://192.168.225.1/> in a browser on a machine
+that can reach the rig's LAN and see what it serves. The probe script below
+tries it automatically.
+
 ## Discover the API
 
 On the Pi:
