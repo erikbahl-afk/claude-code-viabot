@@ -45,6 +45,17 @@ from .base import STATE_DEGRADED, STATE_FAILED, Worker
 SEGMENT_PATTERN = "%Y%m%dT%H%M%SZ.mkv"
 SEGMENT_RE = re.compile(r"^(\d{8})T(\d{6})Z\.mkv$")
 
+#: A colon that survives into drawtext's own text expander.
+#:
+#: Two backslashes, which looks wrong and is not. A filtergraph is unescaped
+#: twice on the way in — once by the graph parser, once by the filter's option
+#: parser — so a single backslash is consumed before drawtext sees it and the
+#: colon then reads as an option separator, which makes ffmpeg reject the entire
+#: graph and record nothing at all. Single-quoting the value instead does not
+#: work either: drawtext mis-parses a %{...} holding a strftime format when the
+#: value is quoted, and reports the baffling "Both text and text file provided".
+ESCAPED_COLON = r"\\:"
+
 # Checked in order; the first that exists is used for the burned-in clock.
 FONT_CANDIDATES = (
     "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
@@ -90,6 +101,33 @@ def format_utc_offset(seconds: int) -> str:
     return f"{sign}{seconds // 3600:02d}{(seconds % 3600) // 60:02d}"
 
 
+def filter_works(filtergraph: str, timeout: float = 20.0) -> tuple[bool, str]:
+    """Check that ffmpeg accepts a filtergraph, using a synthetic source.
+
+    Worth the half-second at startup: a filtergraph ffmpeg will not parse makes
+    it exit before it has written a single frame, and the worker then restarts
+    it forever. That failure mode cost a whole survey walk once — the alert
+    flickered as the process died and respawned, and nothing was recorded.
+
+    Uses lavfi rather than the camera so the real device is never opened, and
+    so the result is the same whether or not the camera is plugged in.
+    """
+    if shutil.which("ffmpeg") is None:
+        return False, "ffmpeg not installed"
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+             "-f", "lavfi", "-i", "testsrc=size=128x72:rate=1",
+             "-vf", filtergraph, "-frames:v", "1", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)[:200]
+    if result.returncode == 0:
+        return True, ""
+    detail = (result.stderr or result.stdout).strip().splitlines()
+    return False, (detail[-1] if detail else f"ffmpeg exited {result.returncode}")[:200]
+
+
 def free_disk_mb(path: Path) -> float:
     usage = shutil.disk_usage(path)
     return usage.free / 1e6
@@ -119,12 +157,85 @@ class CameraWorker(Worker):
         # exactly which modes the camera does support.
         self._stderr: collections.deque[str] = collections.deque(maxlen=25)
         self._low_disk = False
+        # None = not yet checked, True/False = the filtergraph was accepted.
+        self._overlay_ok: bool | None = None
 
     # -- configuration -------------------------------------------------------
 
     def set_output_dir(self, path: Path) -> None:
         self.output_dir = Path(path)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def effective_mode(self) -> str:
+        """The mode actually in use, which is not always the configured one.
+
+        Overlay falls back to copy when there is no usable font or the filter
+        is rejected, and the clip container depends on this (H.264 goes in an
+        .mp4; raw MJPEG does not).
+        """
+        if self.mode != "overlay":
+            return self.mode
+        if self._overlay_ok is False:
+            return "copy"
+        return "overlay"
+
+    def overlay_filter(self, start_epoch: float) -> str | None:
+        """The filtergraph that decimates and burns in the clock, or None.
+
+        Returns None when the overlay cannot be used, so the caller records
+        without it rather than not at all.
+        """
+        font = find_font()
+        if font is None:
+            if self._overlay_ok is not False:
+                self._overlay_ok = False
+                self.emit("warning",
+                          "no usable font found; recording without a burned-in "
+                          "clock (apt install fonts-dejavu-core)")
+            return None
+
+        offset = utc_offset_s(start_epoch)
+        base = int(start_epoch) + offset
+        # ffmpeg runs with TZ=UTC so that segment filenames are UTC, which also
+        # makes drawtext's "localtime" render UTC. Adding the local offset to
+        # the base gets a local-time clock back into the picture, and the offset
+        # is printed after it so the footage says which zone it is in.
+        #
+        # Each colon inside %{...} carries TWO backslashes, which looks wrong
+        # and is not: a filtergraph is unescaped twice on its way in, once by
+        # the graph parser and once by the filter's own option parser, so a
+        # single backslash is consumed before drawtext ever sees it and the
+        # colon then reads as an option separator. A single backslash here is
+        # what made ffmpeg reject the whole graph and refuse to record at all.
+        # Single-quoting the value instead does not work either — drawtext
+        # mis-parses a %{...} containing a strftime format inside quotes.
+        sep = ESCAPED_COLON
+        label = (f"%{{pts{sep}localtime{sep}{base}{sep}%F %T}} "
+                 f"{format_utc_offset(offset)}")
+        # Decimate before the overlay and encoder, so neither does work on
+        # frames that are about to be dropped.
+        candidate = (
+            f"fps={self.fps},"
+            f"drawtext=fontfile={font}"
+            f":text={label}"
+            ":fontsize=22:fontcolor=white"
+            ":box=1:boxcolor=black@0.6:boxborderw=6"
+            ":x=10:y=10"
+        )
+
+        if self._overlay_ok is None:
+            ok, error = filter_works(candidate)
+            self._overlay_ok = ok
+            if not ok:
+                # Losing every frame of a survey because a text overlay would
+                # not parse is a far worse outcome than losing the clock, so
+                # this degrades instead of failing.
+                self.emit("error",
+                          "the timestamp overlay was rejected by ffmpeg, so "
+                          "recording will continue without it. Timestamps still "
+                          f"come from the file names. ({error})")
+        return candidate if self._overlay_ok else None
 
     def build_command(self, output_dir: Path, start_epoch: float) -> list[str]:
         cmd = [
@@ -145,42 +256,16 @@ class CameraWorker(Worker):
             "-i", self.device,
         ]
 
-        font = find_font() if self.mode == "overlay" else None
-        if self.mode == "overlay" and font:
-            # Derive the printed time from the frame's own PTS plus the capture
-            # start, so the label matches when the frame was taken even if
-            # encoding lags behind.
-            #
-            # ffmpeg runs with TZ=UTC so that segment filenames are UTC, which
-            # also makes drawtext's "localtime" render UTC. Adding the local
-            # offset to the base gets a local-time clock back in the picture,
-            # and the offset itself is printed after it so the footage says
-            # which zone it is in rather than leaving the reviewer to guess.
-            offset = utc_offset_s(start_epoch)
-            base = int(start_epoch) + offset
-            label = f"%{{pts\\:localtime\\:{base}\\:%F %T}} {format_utc_offset(offset)}"
-            drawtext = (
-                f"drawtext=fontfile={font}"
-                f":text={label}"
-                ":fontsize=22:fontcolor=white"
-                ":box=1:boxcolor=black@0.6:boxborderw=6"
-                ":x=10:y=10"
-            )
-            # Decimate to the configured rate before the overlay and encoder,
-            # so neither does work on frames that are about to be dropped.
-            filters = f"fps={self.fps},{drawtext}"
+        overlay = self.overlay_filter(start_epoch) if self.mode == "overlay" else None
+        if overlay:
             cmd += [
-                "-vf", filters,
+                "-vf", overlay,
                 "-r", str(self.fps),
                 "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
                 "-crf", "28", "-pix_fmt", "yuv420p",
                 "-g", str(max(1, self.fps * 2)),
             ]
         else:
-            if self.mode == "overlay" and not font:
-                self.emit("warning",
-                          "no usable font found; recording without a burned-in clock "
-                          "(apt install fonts-dejavu-core)")
             # Store the camera's native MJPEG untouched: no decode, no encode.
             # Nothing can be decimated without re-encoding, so this records at
             # whatever rate the camera sends — larger files, but zero CPU.
@@ -299,7 +384,9 @@ class CameraWorker(Worker):
             "local_utc_offset": format_utc_offset(offset),
             "timezone": time.strftime("%Z", time.localtime(self._started_at)),
             "device": self.device,
-            "mode": self.mode,
+            "mode": self.effective_mode,
+            "configured_mode": self.mode,
+            "overlay": self._overlay_ok,
             "resolution": f"{self.width}x{self.height}@{self.fps}",
         }
         try:
@@ -339,7 +426,9 @@ class CameraWorker(Worker):
         directory = self.output_dir
         return {
             "device": self.device,
-            "mode": self.mode,
+            "mode": self.effective_mode,
+            "configured_mode": self.mode,
+            "overlay": self._overlay_ok,
             "resolution": f"{self.width}x{self.height}@{self.fps}",
             "capture_fps": self.capture_fps or "driver default",
             "recording": self._proc is not None and self._proc.poll() is None,

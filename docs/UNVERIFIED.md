@@ -13,8 +13,17 @@ output before trusting any of the below.
 
 | | Status | If the assumption is wrong |
 |---|---|---|
-| **`wlan0` actually serves an access point** | **Nearly settled.** The radio is present, unblocked, advertises AP mode, and the `unavailable` state turned out to be NetworkManager's own Wi-Fi switch being off — `nmcli radio wifi on` moved it to `disconnected`, the healthy idle state. `setup_ap.sh` now does that itself. What has still never been done is bringing up an actual AP and joining it from a phone. | The control plane needs rethinking — likely a USB Wi-Fi dongle, or controlling the rig over the wired LAN. |
 | **Power headroom** | The battery's Ah/Wh rating has never been read and no runtime figure exists. Undervoltage flags are polled every second and stored per sample — which detects a sagging supply but cannot predict how long the pack lasts. | Survey walks get cut short with no warning. |
+
+## Answered by the first real setup, 2026-09-11
+
+| | Finding |
+|---|---|
+| **`wlan0` serves an access point** | **Settled.** `setup_ap.sh` reported `wlan0 is in AP mode` at 192.168.50.1, the network was joined from a phone, and the control page loaded. The earlier `unavailable` state was NetworkManager's own Wi-Fi switch being off; the script now turns it on itself. |
+| **The captive portal fires** | The phone showed "Sign in to ViaBot-Survey" and opened the page unprompted. |
+| **The camera records** | **Settled, after a bug.** The first walk recorded nothing: ffmpeg rejected the overlay filtergraph and the worker restarted it in a loop. Fixed, and the filtergraph is now validated at startup against a synthetic source, so a future mistake here degrades to recording without the clock instead of recording nothing. |
+| **Clips are cut** | Verified end to end against real footage, including the case where a dead zone straddles two segment files and they have to be joined. |
+| **The rest of the chain** | A run started, paused, resumed, ended, and reported a percentage. Link, power, disk and clock all read healthy. |
 
 ## Answered by the preflight run of 2026-09-11
 
