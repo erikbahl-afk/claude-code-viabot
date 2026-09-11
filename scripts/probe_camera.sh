@@ -45,22 +45,29 @@ for block in blocks:
         w, h = int(match.group(1)), int(match.group(2))
         fps = [float(f) for f in re.findall(r"\(([\d.]+) fps\)", match.group(3))]
         top = max(fps) if fps else 0.0
-        # Prefer the largest frame that still sustains at least 10 fps; above
-        # 1280x720 the Pi 4 struggles to burn in the timestamp overlay.
-        if top >= 10 and w <= 1280 and (best is None or w * h > best[0] * best[1]):
-            best = (w, h, top)
+        # Prefer a widescreen frame: the rig is looking down a driving lane, so
+        # horizontal field of view is what tells a ramp from a corner, and a
+        # 5:4 mode of the same pixel count throws that away for dead height.
+        # Cap at 1280 wide — above that the Pi 4 struggles to burn in the
+        # timestamp overlay in real time.
+        widescreen = abs((w / h) - 16 / 9) < 0.06
+        score = (1 if widescreen else 0, w * h)
+        if top >= 10 and w <= 1280 and (best is None or score > best[3]):
+            best = (w, h, top, score)
 
 if best is None:
     print("  Could not find an MJPEG mode at 10 fps or better.")
     print("  Set camera.mode: copy in config/config.yaml and pick a size from the list above.")
 else:
-    w, h, fps = best
+    w, h, fps = best[0], best[1], best[2]
     print("camera:")
     print(f"  device: {device}")
     print(f"  width: {w}")
     print(f"  height: {h}")
-    print(f"  fps: {min(15, int(fps))}")
+    print("  fps: 10          # written to disk")
+    print("  capture_fps: null  # let the driver use its own rate")
     print("  mode: overlay")
+    print(f"#  (camera offers this size at {fps:.0f} fps)")
 PY
 fi
 

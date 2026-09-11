@@ -101,12 +101,14 @@ class CameraWorker(Worker):
     def __init__(self, device: str = "/dev/video0", width: int = 1280, height: int = 720,
                  fps: int = 10, mode: str = "overlay", segment_s: int = 300,
                  min_free_disk_mb: float = 2000, output_dir: Path | None = None,
+                 capture_fps: int | None = None,
                  enabled: bool = True, **kwargs: Any) -> None:
         super().__init__(enabled=enabled, **kwargs)
         self.device = device
         self.width = int(width)
         self.height = int(height)
         self.fps = int(fps)
+        self.capture_fps = int(capture_fps) if capture_fps else None
         self.mode = mode if mode in ("overlay", "copy") else "overlay"
         self.segment_s = max(10, int(segment_s))
         self.min_free_disk_mb = float(min_free_disk_mb)
@@ -129,7 +131,16 @@ class CameraWorker(Worker):
             "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin",
             "-f", "v4l2",
             "-input_format", "mjpeg",
-            "-framerate", str(self.fps),
+        ]
+        # Only pin the capture rate when explicitly configured. UVC cameras
+        # advertise a fixed set of intervals, and this rig's advertises 30 fps
+        # and nothing else; asking for a rate it does not offer makes it carry
+        # on sending 30 while ffmpeg believes otherwise, which skews the
+        # timestamps every correlation in this project depends on. Left alone,
+        # the driver picks its own rate and we decimate below.
+        if self.capture_fps:
+            cmd += ["-framerate", str(self.capture_fps)]
+        cmd += [
             "-video_size", f"{self.width}x{self.height}",
             "-i", self.device,
         ]
@@ -155,8 +166,12 @@ class CameraWorker(Worker):
                 ":box=1:boxcolor=black@0.6:boxborderw=6"
                 ":x=10:y=10"
             )
+            # Decimate to the configured rate before the overlay and encoder,
+            # so neither does work on frames that are about to be dropped.
+            filters = f"fps={self.fps},{drawtext}"
             cmd += [
-                "-vf", drawtext,
+                "-vf", filters,
+                "-r", str(self.fps),
                 "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
                 "-crf", "28", "-pix_fmt", "yuv420p",
                 "-g", str(max(1, self.fps * 2)),
@@ -167,6 +182,8 @@ class CameraWorker(Worker):
                           "no usable font found; recording without a burned-in clock "
                           "(apt install fonts-dejavu-core)")
             # Store the camera's native MJPEG untouched: no decode, no encode.
+            # Nothing can be decimated without re-encoding, so this records at
+            # whatever rate the camera sends — larger files, but zero CPU.
             cmd += ["-c:v", "copy"]
 
         cmd += [
@@ -324,6 +341,7 @@ class CameraWorker(Worker):
             "device": self.device,
             "mode": self.mode,
             "resolution": f"{self.width}x{self.height}@{self.fps}",
+            "capture_fps": self.capture_fps or "driver default",
             "recording": self._proc is not None and self._proc.poll() is None,
             "output_dir": str(directory) if directory else None,
             "segments": len(segments),

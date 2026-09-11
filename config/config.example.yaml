@@ -115,15 +115,28 @@ router:
 # Camera. Records continuously to local disk for later review — video is
 # deliberately NOT served over the Wi-Fi AP.
 #
-# Run `./scripts/probe_camera.sh` on the Pi to see what your camera supports;
-# the app falls back to the closest supported mode if these values are not.
+# The rig's camera (LRCP USB2.0, Realtek 0bda:3035) has been characterised. In
+# MJPEG it offers 1920x1080, 1280x1024, 1280x720, 1024x768, 800x600, 640x480,
+# 352x288, 320x240 and 160x120 — every one of them at 30 fps and *only* at
+# 30 fps. Run `./scripts/probe_camera.sh` if you swap the camera.
 # ----------------------------------------------------------------------------
 camera:
   enabled: true
   device: /dev/video0
   width: 1280
   height: 720
+
+  # Frames per second actually written to disk. Lower means smaller files and
+  # less CPU; 10 is ample for walking pace.
   fps: 10
+
+  # Frames per second requested *from the camera*. Leave null to let the driver
+  # use its own rate, which is what you want: this camera advertises 30 fps and
+  # nothing else, and asking a UVC device for a rate it does not offer makes it
+  # quietly keep sending 30 while ffmpeg believes it is getting what it asked
+  # for — which skews the timestamps the whole rig depends on. With null, the
+  # capture runs native and is decimated to `fps` on the way to disk.
+  capture_fps: null
   # "overlay" burns a human-readable wall clock into the picture (uses ~1 CPU
   #           core on a Pi 4 at 720p10 — this is the mode that makes
   #           timestamp correlation foolproof).

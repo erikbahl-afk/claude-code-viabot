@@ -10,6 +10,7 @@
 #
 # Nothing it prints is secret: no passwords, no keys, no SSIDs in use.
 
+# shellcheck source=lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh" 2>/dev/null || {
   step() { printf '\n==> %s\n' "$*"; }
   info() { printf '    %s\n' "$*"; }
@@ -17,7 +18,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh" 2>/dev/null || {
   ok()   { printf '    ✓ %s\n' "$*"; }
   set -uo pipefail
 }
-set +e   # a missing tool is an answer, not a failure
+set +e            # a missing tool is an answer, not a failure
+set +o pipefail   # lib.sh turns this on; here a non-zero first stage in a
+                  # pipeline (ping reporting TTL-exceeded, say) is expected and
+                  # must not make the whole pipeline look like it failed
 
 show() { printf '    $ %s\n' "$*"; "$@" 2>&1 | sed 's/^/      /'; }
 
@@ -34,12 +38,22 @@ else
 fi
 show rfkill list
 printf '    $ iw list | supported interface modes\n'
-iw list 2>/dev/null | awk '/Supported interface modes/,/^\t[A-Z]/' | head -20 | sed 's/^/      /'
-if iw list 2>/dev/null | awk '/Supported interface modes/,/Supported commands/' | grep -qw "AP"; then
+MODES="$(iw list 2>/dev/null | sed -n '/Supported interface modes/,/^[[:space:]]*Band\|^[[:space:]]*Supported commands/p' \
+         | grep -E '^[[:space:]]*\*' )"
+if [[ -n "$MODES" ]]; then
+  printf '%s\n' "$MODES" | sed 's/^/      /'
+else
+  printf '      (none listed — iw unavailable or output shape differs)\n'
+fi
+if printf '%s\n' "$MODES" | grep -qE '^\s*\*\s*AP\s*$'; then
   ok "driver advertises AP mode"
+elif printf '%s\n' "$MODES" | grep -q "AP"; then
+  warn "only an AP variant listed (e.g. AP/VLAN) — report the list above"
 else
   warn "AP mode NOT advertised (or iw unavailable) — report this verbatim"
 fi
+printf '    $ nmcli radio wifi   (NetworkManager can disable the radio itself)\n'
+printf '      %s\n' "$(nmcli radio wifi 2>/dev/null || echo 'nmcli unavailable')"
 printf '    $ grep -i wifi config.txt\n'
 grep -i -e wifi -e disable-wifi /boot/firmware/config.txt /boot/config.txt 2>/dev/null | sed 's/^/      /' \
   || printf '      (no wifi-related overlay lines — good)\n'
@@ -64,8 +78,13 @@ else
   printf '      no — sudo will prompt for a password (setup.sh handles this)\n'
 fi
 show timedatectl
-info "Timezone was never set during imaging. Video segment names are UTC, but"
-info "the clock burned into the picture is local — so this needs to be right."
+TZ_NOW="$(timedatectl show -p Timezone --value 2>/dev/null || echo '')"
+if [[ -z "$TZ_NOW" || "$TZ_NOW" == "Etc/UTC" || "$TZ_NOW" == "UTC" ]]; then
+  warn "timezone is unset or UTC. Video segment names are UTC by design, but the"
+  warn "clock burned into the picture is local — set it with setup.sh --timezone."
+else
+  ok "timezone set to $TZ_NOW"
+fi
 
 # ---------------------------------------------------------------------------
 step "4. Camera"

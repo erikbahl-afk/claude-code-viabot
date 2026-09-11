@@ -113,6 +113,7 @@ class SurveyRunner:
             width=config["camera"]["width"],
             height=config["camera"]["height"],
             fps=config["camera"]["fps"],
+            capture_fps=config["camera"].get("capture_fps"),
             mode=config["camera"]["mode"],
             segment_s=config["camera"]["segment_s"],
             min_free_disk_mb=config["camera"]["min_free_disk_mb"],
