@@ -65,6 +65,22 @@ if command -v raspi-config >/dev/null; then
 fi
 sudo iw reg set "$COUNTRY" 2>/dev/null || true
 sudo rfkill unblock wifi 2>/dev/null || true
+
+# NetworkManager keeps its own Wi-Fi switch, separate from rfkill. A Pi imaged
+# with the wireless step skipped comes up with it off: the radio is present and
+# unblocked, but every interface shows "unavailable" and the AP silently never
+# starts. Turning it on here is what makes this script work on a fresh Pi.
+if [[ "$(nmcli radio wifi 2>/dev/null)" != "enabled" ]]; then
+  sudo nmcli radio wifi on
+  # The device takes a moment to move out of "unavailable".
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [[ "$(nmcli -g GENERAL.STATE device show "$IFACE" 2>/dev/null)" == *unavailable* ]] || break
+    sleep 1
+  done
+  ok "enabled NetworkManager's Wi-Fi radio"
+else
+  ok "NetworkManager Wi-Fi radio already on"
+fi
 ok "country $COUNTRY, wifi unblocked ($(iw reg get 2>/dev/null | awk '/country/{print $2; exit}'))"
 
 step "NetworkManager connection '$CON_NAME'"

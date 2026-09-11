@@ -9,13 +9,6 @@
 </head>
 <body>
   <div id="offline" class="offline-banner" hidden>Lost contact with the rig — reconnecting…</div>
-  <header class="topbar">
-    <div>
-      <h1>ViaBot Survey Rig</h1>
-      <div class="sub">{% block subtitle %}v{{ version }}{% endblock %}</div>
-    </div>
-    <nav>{% block nav %}{% endblock %}</nav>
-  </header>
   <main class="wrap">
     {% block content %}{% endblock %}
   </main>

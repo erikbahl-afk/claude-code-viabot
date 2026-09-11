@@ -85,9 +85,14 @@ Check, before trusting it:
   route is via `eth0`.
 - **Subsystems → camera** is enabled and not failed.
 
-Then start a run, walk around the building for two minutes, tap MARK a couple of
-times, stop it, and open **Runs → Report**. If the report shows your marks with
-a video file and offset next to them, the whole chain works.
+Then press START with a location name, walk around the building for two
+minutes, press PAUSE and RESUME once to check they work, and press END. If it
+comes back with a runnable percentage, the whole chain works.
+
+To prove the part that matters — dead-zone detection and clip cutting — you need
+somewhere with genuinely bad reception. Walking into a lift or a basement for
+ten seconds is usually enough. Afterwards, check that a clip landed in
+`data/clips/<run-id>/`.
 
 ## 6. Optional — modem signal statistics
 

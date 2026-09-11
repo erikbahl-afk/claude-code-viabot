@@ -1,8 +1,8 @@
 """SQLite persistence for survey runs.
 
 One database holds every run. Per-second measurements land in ``samples``;
-sparse throughput tests and operator marks get their own tables so the
-once-a-second row stays narrow.
+sparse throughput tests and the dead zones found at the end of a run get
+their own tables so the once-a-second row stays narrow.
 
 All timestamps are Unix epoch seconds (UTC). The UI converts for display.
 """
@@ -35,7 +35,14 @@ CREATE TABLE IF NOT EXISTS runs (
     -- Recorded so a run stays interpretable if the Pi's timezone is changed
     -- later: video segment names are UTC, the burned-in clock is local.
     tz_name     TEXT,
-    tz_offset_s INTEGER
+    tz_offset_s INTEGER,
+    -- Filled in when the run ends. Percentage is of time walked, not distance:
+    -- there is no indoor positioning, which is why pausing while stationary
+    -- matters to its accuracy.
+    runnable_pct REAL,
+    walked_s     REAL,
+    dead_s       REAL,
+    summary_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS samples (
@@ -61,17 +68,22 @@ CREATE TABLE IF NOT EXISTS samples (
 );
 CREATE INDEX IF NOT EXISTS idx_samples_run_ts ON samples(run_id, ts);
 
-CREATE TABLE IF NOT EXISTS marks (
+CREATE TABLE IF NOT EXISTS dead_zones (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id         TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-    ts             REAL NOT NULL,
-    category       TEXT NOT NULL DEFAULT '',
-    note           TEXT NOT NULL DEFAULT '',
-    status         TEXT,
+    idx            INTEGER NOT NULL,
+    start_ts       REAL NOT NULL,
+    end_ts         REAL NOT NULL,
+    duration_s     REAL NOT NULL,
+    worst_loss_pct REAL,
+    worst_rtt_ms   REAL,
+    sample_count   INTEGER,
     video_file     TEXT,
-    video_offset_s REAL
+    video_offset_s REAL,
+    clip_path      TEXT,
+    clip_error     TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_marks_run_ts ON marks(run_id, ts);
+CREATE INDEX IF NOT EXISTS idx_dead_zones_run ON dead_zones(run_id, start_ts);
 
 CREATE TABLE IF NOT EXISTS throughput (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -165,6 +177,14 @@ class Storage:
         self._write("UPDATE runs SET ended_at = ? WHERE id = ? AND ended_at IS NULL",
                     (time.time() if ended_at is None else ended_at, run_id))
 
+    def set_run_summary(self, run_id: str, summary: dict) -> None:
+        self._write(
+            "UPDATE runs SET runnable_pct = ?, walked_s = ?, dead_s = ?, "
+            "summary_json = ? WHERE id = ?",
+            (summary.get("runnable_pct"), summary.get("walked_s"),
+             summary.get("dead_s"), json.dumps(summary), run_id),
+        )
+
     def set_run_notes(self, run_id: str, notes: str) -> None:
         self._write("UPDATE runs SET notes = ? WHERE id = ?", (notes, run_id))
 
@@ -178,7 +198,7 @@ class Storage:
             """
             SELECT r.*,
                    (SELECT COUNT(*) FROM samples s WHERE s.run_id = r.id) AS sample_count,
-                   (SELECT COUNT(*) FROM marks m WHERE m.run_id = r.id)   AS mark_count
+                   (SELECT COUNT(*) FROM dead_zones d WHERE d.run_id = r.id) AS dead_zone_count
             FROM runs r ORDER BY r.started_at DESC LIMIT ?
             """,
             (limit,),
@@ -221,25 +241,40 @@ class Storage:
         for row in cursor:
             yield dict(row)
 
-    # -- marks ---------------------------------------------------------------
+    # -- dead zones ----------------------------------------------------------
 
-    def add_mark(self, run_id: str, ts: float, category: str = "", note: str = "",
-                 status: str | None = None, video_file: str | None = None,
-                 video_offset_s: float | None = None) -> int:
-        cursor = self._write(
-            "INSERT INTO marks(run_id, ts, category, note, status, video_file, video_offset_s) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?)",
-            (run_id, ts, category, note, status, video_file, video_offset_s),
-        )
-        return int(cursor.lastrowid)
+    def replace_dead_zones(self, run_id: str, zones: list[dict]) -> None:
+        """Store a run's dead zones, replacing any previous analysis.
 
-    def list_marks(self, run_id: str) -> list[dict]:
+        Detection runs off stored samples, so re-analysing a run after changing
+        the thresholds is expected and must not accumulate duplicates.
+        """
+        with self._write_lock:
+            conn = self.connection()
+            conn.execute("BEGIN")
+            try:
+                conn.execute("DELETE FROM dead_zones WHERE run_id = ?", (run_id,))
+                for zone in zones:
+                    conn.execute(
+                        "INSERT INTO dead_zones(run_id, idx, start_ts, end_ts, "
+                        "duration_s, worst_loss_pct, worst_rtt_ms, sample_count, "
+                        "video_file, video_offset_s, clip_path, clip_error) "
+                        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (run_id, zone["index"], zone["start_ts"], zone["end_ts"],
+                         zone["duration_s"], zone.get("worst_loss_pct"),
+                         zone.get("worst_rtt_ms"), zone.get("sample_count"),
+                         zone.get("video_file"), zone.get("video_offset_s"),
+                         zone.get("clip_path"), zone.get("clip_error")))
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+    def list_dead_zones(self, run_id: str) -> list[dict]:
         rows = self.connection().execute(
-            "SELECT * FROM marks WHERE run_id = ? ORDER BY ts", (run_id,)).fetchall()
+            "SELECT * FROM dead_zones WHERE run_id = ? ORDER BY start_ts",
+            (run_id,)).fetchall()
         return [dict(row) for row in rows]
-
-    def delete_mark(self, mark_id: int) -> None:
-        self._write("DELETE FROM marks WHERE id = ?", (mark_id,))
 
     # -- throughput ----------------------------------------------------------
 

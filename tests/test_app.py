@@ -64,7 +64,7 @@ def test_config_endpoint_never_leaks_the_wifi_password(client):
 def test_starting_a_run_never_returns_or_stores_the_wifi_password(client, storage):
     """The run record embeds the config in force, is handed straight back over
     the API, and the database gets copied onto laptops."""
-    body = client.post("/api/run/start", json={}).get_json()
+    body = client.post("/api/run/start", json={"label": "Sunset L2"}).get_json()
     assert "changeme123" not in str(body)
     assert '"password": "********"' in body["run"]["config_json"]
     stored = storage.get_run(body["run"]["id"])["config_json"]
@@ -74,25 +74,38 @@ def test_starting_a_run_never_returns_or_stores_the_wifi_password(client, storag
 
 # ---- run lifecycle ---------------------------------------------------------
 
-def test_run_start_stop_and_mark(client):
+def test_run_start_pause_resume_and_stop(client):
     started = client.post("/api/run/start", json={"label": "Sunset L2"})
     assert started.status_code == 200
-    run_id = started.get_json()["run"]["id"]
-    assert run_id.endswith("-sunset-l2")
+    assert started.get_json()["run"]["id"].endswith("-sunset-l2")
 
-    assert client.post("/api/run/start", json={}).status_code == 409
+    assert client.post("/api/run/start", json={"label": "Other"}).status_code == 409
 
-    marked = client.post("/api/mark", json={"category": "Ramp", "note": "L1 to L2"})
-    assert marked.status_code == 200
-    assert marked.get_json()["mark"]["category"] == "Ramp"
+    assert client.post("/api/run/pause").status_code == 200
+    assert client.get("/api/status").get_json()["paused"] is True
+    # Pausing twice is a no-op, not a crash.
+    assert client.post("/api/run/pause").status_code == 409
 
-    assert len(client.get("/api/marks").get_json()["marks"]) == 1
+    assert client.post("/api/run/resume").status_code == 200
+    assert client.get("/api/status").get_json()["paused"] is False
+    assert client.post("/api/run/resume").status_code == 409
+
     assert client.post("/api/run/stop").status_code == 200
     assert client.post("/api/run/stop").status_code == 409
 
 
-def test_marks_are_refused_when_no_run_is_recording(client):
-    assert client.post("/api/mark", json={"category": "Ramp"}).status_code == 409
+def test_a_run_cannot_start_without_a_location_name(client):
+    """An unlabelled run is just a timestamp; a week later nobody knows which
+    garage it was."""
+    for label in ("", "   ", "!!!"):
+        response = client.post("/api/run/start", json={"label": label})
+        assert response.status_code == 400
+        assert "location name" in response.get_json()["error"]
+
+
+def test_pause_and_resume_are_refused_with_no_run(client):
+    assert client.post("/api/run/pause").status_code == 409
+    assert client.post("/api/run/resume").status_code == 409
 
 
 def test_iperf_endpoint_explains_itself_when_disabled(client):
@@ -103,19 +116,24 @@ def test_iperf_endpoint_explains_itself_when_disabled(client):
 
 def test_status_payload_has_what_the_dashboard_needs(client):
     body = client.get("/api/status").get_json()
-    assert {"sample", "run", "workers", "system", "version"} <= set(body)
+    assert {"sample", "run", "workers", "system", "version", "health"} <= set(body)
     assert {"ping", "dns", "iperf3", "router", "camera"} <= set(body["workers"])
+    # Health is what the operator sees without opening anything, so every
+    # subsystem that can silently ruin a walk must be in it.
+    assert {"camera", "link", "power", "disk", "clock"} <= set(body["health"])
+    for item in body["health"].values():
+        assert "state" in item and "detail" in item
 
 
 def test_active_run_cannot_be_deleted(client):
-    run_id = client.post("/api/run/start", json={}).get_json()["run"]["id"]
+    run_id = client.post("/api/run/start", json={"label": "L2"}).get_json()["run"]["id"]
     assert client.delete(f"/api/runs/{run_id}").status_code == 409
     client.post("/api/run/stop")
     assert client.delete(f"/api/runs/{run_id}").status_code == 200
 
 
 def test_update_is_refused_mid_run(client):
-    client.post("/api/run/start", json={})
+    client.post("/api/run/start", json={"label": "L2"})
     response = client.post("/api/update/apply")
     assert response.status_code == 409
     assert "stop the run" in response.get_json()["error"]
@@ -125,7 +143,7 @@ def test_update_is_refused_mid_run(client):
 # ---- export and reporting --------------------------------------------------
 
 def test_samples_csv_exports_the_video_pointer(client, storage):
-    run_id = client.post("/api/run/start", json={}).get_json()["run"]["id"]
+    run_id = client.post("/api/run/start", json={"label": "L2"}).get_json()["run"]["id"]
     now = time.time()
     storage.add_sample(run_id, now, rtt_ms=50.0, loss_pct=0.0, status="good",
                        video_file="20260911-140000.mkv", video_offset_s=12.0)
@@ -144,7 +162,7 @@ def test_samples_csv_exports_the_video_pointer(client, storage):
 
 
 def test_exported_timestamps_carry_their_zone(client, storage):
-    run_id = client.post("/api/run/start", json={}).get_json()["run"]["id"]
+    run_id = client.post("/api/run/start", json={"label": "L2"}).get_json()["run"]["id"]
     storage.add_sample(run_id, 1_700_000_000.0, rtt_ms=50.0, status="good")
     client.post("/api/run/stop")
     rows = client.get(f"/api/runs/{run_id}/samples.csv").get_data(as_text=True)
@@ -159,40 +177,62 @@ def test_csv_export_of_an_unknown_run_404s(client):
     assert client.get("/api/runs/nope/samples.csv").status_code == 404
 
 
-def test_report_groups_contiguous_bad_samples_into_problem_areas(storage):
-    """The report exists to answer one question: which stretches were bad, and
-    what was the camera pointed at during them."""
-    run = storage.create_run("r1")
+def test_report_carries_the_dead_zones_and_the_headline_percentage(storage):
+    """The report answers one question: how much of the walk was usable, and
+    where was it not."""
+    storage.create_run("r1")
     base = 1_700_000_000.0
-    statuses = (["good"] * 5 + ["bad"] * 3 + ["dead"] * 4 + ["good"] * 5
-                + ["bad"] * 2 + ["good"] * 3)
-    for offset, status in enumerate(statuses):
-        storage.add_sample("r1", base + offset, rtt_ms=None if status == "dead" else 50.0,
-                           loss_pct=100.0 if status == "dead" else 0.0, status=status,
-                           video_file="20260911-140000.mkv", video_offset_s=float(offset))
-    storage.add_mark("r1", base + 9, category="Ramp", note="L1 to L2")
+    for offset in range(100):
+        dead = 20 <= offset < 40
+        storage.add_sample("r1", base + offset,
+                           rtt_ms=None if dead else 50.0,
+                           loss_pct=100.0 if dead else 0.0,
+                           status="dead" if dead else "good",
+                           video_file="20231114T221320Z.mkv",
+                           video_offset_s=float(offset))
+    storage.replace_dead_zones("r1", [{
+        "index": 1, "start_ts": base + 20, "end_ts": base + 39, "duration_s": 20.0,
+        "worst_loss_pct": 100.0, "sample_count": 20,
+        "video_file": "20231114T221320Z.mkv", "video_offset_s": 20.0,
+        "clip_path": "/data/clips/r1/deadzone-01.mp4",
+    }])
+    storage.set_run_summary("r1", {"runnable_pct": 80.0, "walked_s": 100.0,
+                                   "dead_s": 20.0, "dead_zone_count": 1})
     storage.end_run("r1")
 
     report = build_report(storage, storage.get_run("r1"))
-    areas = report["problem_areas"]
-    assert len(areas) == 2
-    assert areas[0]["worst_status"] == "dead"     # escalates within one stretch
-    assert areas[0]["duration_s"] == 7.0          # the bad and dead stretches merge into one
-    assert areas[0]["video_file"] == "20260911-140000.mkv"
-    assert [m["category"] for m in areas[0]["marks"]] == ["Ramp"]
-    assert areas[1]["worst_status"] == "bad"
-    assert areas[1]["marks"] == []
-    assert report["status_pct"]["good"] == 59.1
+    assert report["runnable_pct"] == 80.0
+    assert len(report["dead_zones"]) == 1
+    zone = report["dead_zones"][0]
+    assert zone["duration_s"] == 20.0
+    assert zone["clip_path"].endswith(".mp4")
+    # Both clocks, so the entry is unambiguous in an exported file.
+    assert zone["start_utc"].endswith("Z")
+    assert re.search(r"[+-]\d{4}$", zone["start_local"])
 
 
-def test_report_of_a_clean_walk_has_no_problem_areas(storage):
+def test_report_of_a_clean_walk_has_no_dead_zones(storage):
     storage.create_run("clean")
     for offset in range(10):
         storage.add_sample("clean", 1_700_000_000.0 + offset, rtt_ms=45.0,
                            loss_pct=0.0, status="good")
     report = build_report(storage, storage.get_run("clean"))
-    assert report["problem_areas"] == []
-    assert report["rtt_ms"]["avg"] == 45.0
+    assert report["dead_zones"] == []
+    assert report["status_pct"]["good"] == 100.0
+
+
+def test_dead_zone_csv_export(client, storage):
+    run_id = client.post("/api/run/start", json={"label": "L2"}).get_json()["run"]["id"]
+    client.post("/api/run/stop")
+    storage.replace_dead_zones(run_id, [{
+        "index": 1, "start_ts": 1_700_000_000.0, "end_ts": 1_700_000_019.0,
+        "duration_s": 20.0, "worst_loss_pct": 100.0, "sample_count": 20,
+        "clip_path": "/data/clips/x.mp4",
+    }])
+    text = client.get(f"/api/runs/{run_id}/deadzones.csv").get_data(as_text=True)
+    header, first = text.strip().splitlines()[:2]
+    assert "clip_path" in header and "start_utc" in header
+    assert "/data/clips/x.mp4" in first
 
 
 def test_health_endpoint_is_cheap_and_always_answers(client):

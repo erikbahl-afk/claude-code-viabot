@@ -77,8 +77,8 @@ only if you enable modem-statistics collection.
   consider at minimum that the 12 ft power run between the DC-DC board and the
   Pi's USB charger is a trip hazard and a disconnection risk, and that the
   camera needs to point consistently for the video to be worth correlating.
-- **No GPIO button is needed any more.** The MARK button on the phone dashboard
-  replaces it.
+- **No GPIO button is needed any more.** The rig detects dead zones itself, so
+  there is nothing to press while walking.
 
 ## The splice
 

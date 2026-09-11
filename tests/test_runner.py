@@ -77,23 +77,45 @@ def test_dead_streak_accumulates_then_resets(runner, monkeypatch):
     assert runner.collect_sample()["dead_streak_s"] == 0.0
 
 
-def test_marks_require_a_run(runner):
-    try:
-        runner.add_mark(category="Ramp")
-    except RuntimeError as exc:
-        assert "no run" in str(exc)
-    else:
-        raise AssertionError("expected a RuntimeError")
-
-
 def test_second_run_is_refused_while_one_is_active(runner):
-    runner.start_run()
+    runner.start_run(label="First")
     try:
-        runner.start_run()
+        runner.start_run(label="Second")
     except RuntimeError as exc:
         assert "already in progress" in str(exc)
     finally:
         runner.stop_run()
+
+
+def test_pausing_stops_samples_being_recorded(runner, storage, monkeypatch):
+    """Paused time must leave no trace at all — the headline result is a
+    percentage of time walked, so standing still must not count as coverage."""
+    runner.ping.enabled = True
+    monkeypatch.setattr(runner.ping, "snapshot",
+                        lambda now=None: {"rtt_ms": 50.0, "loss_pct": 0.0, "jitter_ms": 1.0})
+    run = runner.start_run(label="Pause test")
+    runner.collect_sample()
+    runner.collect_sample()
+    assert runner.pause() is True
+    runner.collect_sample()
+    runner.collect_sample()
+    runner.collect_sample()
+    assert runner.resume() is True
+    runner.collect_sample()
+    rows = list(storage.iter_samples(run["id"]))
+    runner.stop_run()
+    assert len(rows) == 3          # the three paused seconds are simply absent
+
+
+def test_pause_is_idempotent_and_needs_a_run(runner):
+    assert runner.pause() is False
+    assert runner.resume() is False
+    runner.start_run(label="L2")
+    assert runner.pause() is True
+    assert runner.pause() is False
+    assert runner.resume() is True
+    assert runner.resume() is False
+    runner.stop_run()
 
 
 def test_startup_closes_a_run_left_open_by_a_power_cut(config, storage):

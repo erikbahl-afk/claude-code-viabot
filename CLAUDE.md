@@ -48,13 +48,28 @@ data, and the SIM's plan is unknown. Tests assert it ships disabled.
 
 **Timestamps are the product.** Video correlation depends entirely on the system
 clock, and the Pi has no RTC. Preserve `clock_synced` reporting on samples, the
-dashboard, and the start-of-run warning.
+control page, and the start-of-run warning.
+
+**The phone is a controller, not a viewer.** Erik asked for one screen with
+Start / Pause / End, a small connection readout, and rig health — nothing else.
+Results are read on a laptop afterwards. Resist adding reports, charts or video
+to the phone; the screen is small and he is walking.
+
+**Camera failure must be impossible to miss.** A rig whose camera has died is
+still cheerfully reporting connection quality, and the entire walk is wasted.
+It gets a health chip *and* a full-width alert.
+
+**Pause means "this time did not happen".** It stops measuring and recording
+both, so paused seconds leave no samples and no video. That is what makes the
+headline percentage meaningful, since it is a percentage of time and there is no
+indoor positioning. Do not make Pause merely cosmetic.
 
 ## Layout
 
 | Path | Role |
 |---|---|
-| `viabot_survey/runner.py` | Orchestrator: owns run state, samples at 1 Hz, classifies |
+| `viabot_survey/runner.py` | Orchestrator: owns run state, samples at 1 Hz, classifies, analyses at run end |
+| `viabot_survey/deadzones.py` | Detect dead zones from stored samples; cut a clip per zone |
 | `viabot_survey/app.py` | Flask: captive portal, API, report building |
 | `viabot_survey/workers/` | One file per measurement source, all subclass `base.Worker` |
 | `viabot_survey/storage.py` | SQLite; add columns to `SAMPLE_COLUMNS` when extending `samples` |
@@ -69,7 +84,7 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 90 tests, no hardware needed
+.venv/bin/python -m pytest        # 116 tests, no hardware needed
 ```
 
 The suite runs anywhere: workers are tested through their parsing and
@@ -99,9 +114,13 @@ Specifically open:
   `scripts/probe_router.py` probes both the router and the modem.
 - The camera's real capabilities (`scripts/probe_camera.sh`).
 - No iperf3 server exists yet; Erik plans to stand one up.
-- Coverage thresholds are invented — `thresholds.provisional: true`. The plan
-  is to set them from one real survey walk, not from speculation. Do not quietly
-  treat the current numbers as requirements.
+- Dead-zone thresholds are invented — `deadzone.provisional: true` (80% loss or
+  1500 ms, sustained 5 s). The plan is to set them from one real survey walk.
+  Do not quietly treat the current numbers as requirements. A finished run can
+  be re-analysed with new ones via `POST /api/runs/<id>/analyse`.
+- Clip extraction has never run against real footage — ffmpeg is not installed
+  in the container Claude runs in, so `plan_clip` is unit-tested but the actual
+  cutting is not.
 
 ## Working style Erik has asked for
 
