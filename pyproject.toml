@@ -1,0 +1,22 @@
+[project]
+name = "viabot-survey"
+version = "0.1.0"
+description = "Parking-garage cellular coverage survey rig (Raspberry Pi)"
+requires-python = ">=3.11"
+dependencies = ["Flask>=3.0,<4.0", "PyYAML>=6.0", "waitress>=3.0"]
+
+[project.scripts]
+viabot-survey = "viabot_survey.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["viabot_survey*"]
+
+[tool.setuptools.package-data]
+viabot_survey = ["templates/*.html", "static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

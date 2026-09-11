@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0f14">
+  <title>{% block title %}ViaBot Survey Rig{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div id="offline" class="offline-banner" hidden>Lost contact with the rig — reconnecting…</div>
+  <header class="topbar">
+    <div>
+      <h1>ViaBot Survey Rig</h1>
+      <div class="sub">{% block subtitle %}v{{ version }}{% endblock %}</div>
+    </div>
+    <nav>{% block nav %}{% endblock %}</nav>
+  </header>
+  <main class="wrap">
+    {% block content %}{% endblock %}
+  </main>
+  <div id="toast"></div>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

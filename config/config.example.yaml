@@ -1,0 +1,185 @@
+# ViaBot Garage Survey Rig — configuration
+#
+# Copy to config/config.yaml and edit. config/config.yaml is gitignored
+# because it holds the WiFi password and router login; this repo is public.
+#
+#     cp config/config.example.yaml config/config.yaml
+#
+# Every value here can also be overridden by an environment variable named
+# VIABOT_<SECTION>_<KEY>, e.g. VIABOT_PING_TARGET=1.1.1.1
+
+# ----------------------------------------------------------------------------
+# Wi-Fi access point the Pi broadcasts for your phone.
+# Applied by scripts/setup_ap.sh — editing this file alone does not reconfigure
+# the AP; re-run that script after changing anything in this section.
+# ----------------------------------------------------------------------------
+ap:
+  ssid: ViaBot-Survey
+  # WPA2 passphrase, 8-63 characters. CHANGE THIS.
+  password: changeme123
+  interface: wlan0
+  # 2.4 GHz ("bg") penetrates concrete better than 5 GHz ("a") and is more
+  # compatible with older phones. Stick with bg unless you have a reason.
+  band: bg
+  channel: 6
+  # Pi's address on the AP subnet. This is the URL you browse to.
+  address: 192.168.50.1
+  prefix: 24
+  dhcp_range: [192.168.50.10, 192.168.50.100]
+  # Wi-Fi regulatory domain. The Pi's radio stays soft-blocked until this is
+  # set. Two-letter ISO country code.
+  country: US
+  # Deny AP clients (your phone) any route to the internet.
+  # Strongly recommended ON: it keeps phone background traffic from competing
+  # with the measurements over the same modem, and it is what makes phones
+  # reliably pop the captive portal instead of silently falling back to LTE.
+  block_client_internet: true
+
+# ----------------------------------------------------------------------------
+# Uplink under test: the Pi's wired link to the router, whose WAN is cellular.
+# ----------------------------------------------------------------------------
+uplink:
+  interface: eth0
+  router_address: 192.168.1.1
+
+# ----------------------------------------------------------------------------
+# Continuous ping — the primary dead-zone signal. Cheap: ~60 bytes/s.
+# ----------------------------------------------------------------------------
+ping:
+  enabled: true
+  target: 8.8.8.8
+  interval_s: 1.0
+  timeout_s: 2.0
+  # Rolling window used to compute loss %, jitter and the status colour.
+  window_s: 10
+
+# ----------------------------------------------------------------------------
+# DNS resolution check — catches "packets flow but nothing works" cases.
+# ----------------------------------------------------------------------------
+dns:
+  enabled: true
+  hostname: google.com
+  interval_s: 30
+
+# ----------------------------------------------------------------------------
+# iperf3 throughput.
+#
+# DISABLED until you stand up your own iperf3 server. Set `server` to its
+# host/IP and flip `enabled` to true — nothing else needs to change.
+# See docs/IPERF_SERVER.md for the server-side setup.
+#
+# WARNING: this is the only part of the rig that uses real cellular data.
+# At the defaults below (5 s test, 25 Mbit/s cap, once a minute) budget roughly
+# 0.5-1 GB per 30-minute walk. Read docs/IPERF_SERVER.md before enabling.
+# ----------------------------------------------------------------------------
+iperf3:
+  enabled: false
+  server: null
+  port: 5201
+  # Seconds per test.
+  duration_s: 5
+  # Seconds between tests.
+  interval_s: 60
+  # Bitrate cap per test, e.g. "25M". null = uncapped (much more data).
+  bitrate: 25M
+  # "download" | "upload" | "both"
+  direction: download
+  # Parallel streams.
+  streams: 1
+  # Hard ceiling on cellular data per run. The worker stops launching tests
+  # once a run has used this much. null = no limit.
+  run_data_budget_mb: 2000
+
+# ----------------------------------------------------------------------------
+# Router / modem signal statistics (RSRP, RSRQ, SINR, band, cell ID).
+#
+# This is the highest-value coverage data and costs zero cellular data, but the
+# rig's router runs custom ViaBot OpenWrt firmware whose API has not been
+# characterised yet. Run `python3 scripts/probe_router.py` on the Pi to discover
+# which endpoint works, then set `client` accordingly.
+#
+# client: "null"  — collect nothing (default, always safe)
+#         "ubus"  — OpenWrt ubus JSON-RPC over http://<router>/ubus
+#         "luci"  — legacy LuCI RPC at /cgi-bin/luci/rpc/sys
+# ----------------------------------------------------------------------------
+router:
+  client: "null"
+  interval_s: 2
+  username: root
+  password: ""
+  # Set by probe_router.py once discovered.
+  ubus_object: null
+  ubus_method: null
+
+# ----------------------------------------------------------------------------
+# Camera. Records continuously to local disk for later review — video is
+# deliberately NOT served over the Wi-Fi AP.
+#
+# Run `./scripts/probe_camera.sh` on the Pi to see what your camera supports;
+# the app falls back to the closest supported mode if these values are not.
+# ----------------------------------------------------------------------------
+camera:
+  enabled: true
+  device: /dev/video0
+  width: 1280
+  height: 720
+  fps: 10
+  # "overlay" burns a human-readable wall clock into the picture (uses ~1 CPU
+  #           core on a Pi 4 at 720p10 — this is the mode that makes
+  #           timestamp correlation foolproof).
+  # "copy"    stores the camera's native MJPEG untouched at near-zero CPU;
+  #           timestamps then come from the segment filename plus offset.
+  #           Use this if the Pi struggles or you raise the resolution.
+  mode: overlay
+  # Length of each video file, seconds. Shorter = less lost to a bad shutdown.
+  segment_s: 300
+  # Refuse to start (and stop an in-flight run) below this much free disk.
+  min_free_disk_mb: 2000
+
+# ----------------------------------------------------------------------------
+# Thresholds that colour the live status banner and classify dead zones.
+# ----------------------------------------------------------------------------
+thresholds:
+  degraded_loss_pct: 5
+  degraded_rtt_ms: 200
+  bad_loss_pct: 20
+  bad_rtt_ms: 500
+  # Consecutive seconds of 100% loss before a stretch is called a dead zone.
+  dead_after_s: 5
+
+# ----------------------------------------------------------------------------
+# Web server / captive portal.
+# ----------------------------------------------------------------------------
+web:
+  host: 0.0.0.0
+  # Port 80 is required for captive-portal detection to work.
+  port: 80
+  # Hostname served alongside the IP, so you can type http://viabot.rig/
+  portal_hostname: viabot.rig
+  # Redirect any unknown host/path to the dashboard (the captive-portal trick).
+  captive_portal: true
+
+# ----------------------------------------------------------------------------
+# Storage.
+# ----------------------------------------------------------------------------
+storage:
+  # Relative paths resolve against the repository root.
+  data_dir: data
+  # Marks you can tap with one thumb while walking. Edit freely.
+  mark_categories:
+    - Ramp
+    - Entrance
+    - Elevator
+    - Stairwell
+    - Level change
+    - Pillar/corner
+    - Charging dock
+    - Other
+
+# ----------------------------------------------------------------------------
+# Over-the-air updates (git pull from GitHub over the cellular link).
+# ----------------------------------------------------------------------------
+update:
+  enabled: true
+  remote: origin
+  branch: main

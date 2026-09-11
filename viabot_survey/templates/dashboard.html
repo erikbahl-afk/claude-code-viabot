@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block nav %}<a href="/runs">Runs</a>{% endblock %}
+
+{% block content %}
+<div id="banner" class="banner unknown">
+  <div class="label" id="statusLabel">Starting…</div>
+  <div class="detail" id="statusDetail">Waiting for the first measurement</div>
+  <div class="metrics">
+    <div class="metric"><div class="v" id="mRtt">—</div><div class="k">RTT ms</div></div>
+    <div class="metric"><div class="v" id="mLoss">—</div><div class="k">Loss %</div></div>
+    <div class="metric"><div class="v" id="mSignal">—</div><div class="k" id="mSignalKey">Signal</div></div>
+  </div>
+</div>
+
+<div class="chart-card">
+  <canvas id="spark" width="700" height="96"></canvas>
+  <div class="chart-legend"><span id="chartLeft">3 min ago</span><span id="chartRight">now</span></div>
+</div>
+
+<section class="card">
+  <h2>Run</h2>
+  <div id="runIdle">
+    <input type="text" id="runLabel" placeholder="Label, e.g. Sunset Garage L2" maxlength="120">
+    <div style="height:10px"></div>
+    <button class="btn primary" id="btnStart">Start run</button>
+  </div>
+  <div id="runActive" hidden>
+    <dl class="kv">
+      <dt>Run</dt><dd class="mono" id="runId">—</dd>
+      <dt>Elapsed</dt><dd id="runElapsed">—</dd>
+      <dt>Marks</dt><dd id="runMarks">0</dd>
+      <dt>Dead-zone time</dt><dd id="runDead">0 s</dd>
+      <dt>Cellular data used</dt><dd id="runData">0 MB</dd>
+    </dl>
+    <div style="height:12px"></div>
+    <button class="btn stop" id="btnStop">Stop run</button>
+  </div>
+</section>
+
+<section class="card" id="markCard" hidden>
+  <h2>Mark this spot</h2>
+  <div class="chips" id="chips">
+    {% for category in mark_categories %}
+    <button class="chip" data-category="{{ category }}">{{ category }}</button>
+    {% endfor %}
+  </div>
+  <input type="text" id="markNote" placeholder="Optional note" maxlength="200">
+  <div style="height:10px"></div>
+  <button class="btn mark" id="btnMark">MARK</button>
+  <ul class="list" id="markList"></ul>
+</section>
+
+<details class="card">
+  <summary>Subsystems</summary>
+  <dl class="kv" id="workerList"></dl>
+  <div class="btn-row" style="margin-top:12px">
+    <button class="btn small" id="btnIperf">Run throughput test</button>
+  </div>
+</details>
+
+<details class="card">
+  <summary>Rig status</summary>
+  <dl class="kv" id="sysList"></dl>
+</details>
+
+<details class="card">
+  <summary>Software update</summary>
+  <dl class="kv" id="updateList"></dl>
+  <div class="btn-row" style="margin-top:12px">
+    <button class="btn small" id="btnCheckUpdate">Check for updates</button>
+    <button class="btn small" id="btnApplyUpdate" disabled>Apply update</button>
+  </div>
+  <p class="small muted" id="updateHint">
+    Merge the pull request on GitHub first, then check here.
+  </p>
+</details>
+
+<details class="card">
+  <summary>Recent events</summary>
+  <ul class="list" id="eventList"></ul>
+</details>
+
+<p class="small muted" style="text-align:center">
+  Dashboard at <span class="mono">http://{{ ap_address }}/</span>
+  or <span class="mono">http://{{ portal_hostname }}/</span>
+</p>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+{% endblock %}

@@ -1,0 +1,24 @@
+# Local, machine-specific configuration (contains WiFi PSK + router credentials).
+# NEVER commit this file — this repository is public.
+config/config.yaml
+
+# Survey output: databases, video, exports.
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.coverage
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
