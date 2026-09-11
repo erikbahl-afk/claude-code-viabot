@@ -4,10 +4,24 @@ Ping and loss tell you *that* the link failed. RSRP, RSRQ, SINR, band and cell
 ID tell you *why* — weak signal, interference, or a handover to a distant cell —
 and they cost no cellular data at all.
 
-They have to come from the router, since the modem is inside it. The rig's
-router runs ViaBot's own OpenWrt build, and its API has not been characterised,
-so the rig ships with signal collection **off** and a discovery script to find
-out what works.
+They have to come from somewhere inside the rig, and it is not yet clear where.
+
+The router's LuCI front page reports its uplink as **Protocol 5G on an Ethernet
+adapter called `usb0`** — meaning the modem does its own NAT and presents to
+OpenWrt as a plain network card. If that reading is right, the router has no
+modem to query at all: from its point of view the uplink is just a NIC, and the
+radio metrics live inside the modem, typically behind a small web interface on
+its own subnet.
+
+So there are two candidate sources, and the discovery script probes both:
+
+1. the router's own API (ubus or LuCI RPC) — where they live on a conventional
+   OpenWrt cellular router;
+2. the modem's own embedded web UI, past `usb0`.
+
+Only the router's front Status page has ever been looked at — no Modem or
+Cellular submenu was ever opened, and nobody has SSH'd into the router. Until
+that changes the rig ships with signal collection **off**.
 
 ## Discover the API
 
@@ -27,7 +41,14 @@ It is read-only — it logs in and reads, and changes nothing. It will:
    recognisable signal fields;
 4. if ubus is unavailable, fall back to the older **LuCI RPC** endpoint and try
    a series of vendor CLI commands (`gsmctl -A 'AT+CSQ'`, `mmcli`, …);
-5. print a `router:` block ready to paste into `config/config.yaml`.
+5. if neither answers, find the **modem** itself: a TTL-limited ping locates
+   the next hop past the router, and the script then asks that address for the
+   vendor API paths these modems commonly serve (`/api/device/signal`,
+   `/goform/goform_get_cmd_process?cmd=signalbar`, …), falling back to a list
+   of default modem addresses;
+6. print a `router:` block ready to paste into `config/config.yaml` — or, if it
+   found the modem instead, the raw response to paste into a Claude session so
+   a client can be written for it.
 
 Add `--json` to dump the raw payload of whatever worked, which is useful to
 paste into a Claude session if the field names need new aliases.

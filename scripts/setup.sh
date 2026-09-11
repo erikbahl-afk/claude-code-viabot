@@ -12,6 +12,7 @@
 # Flags:
 #   --ssid NAME        Wi-Fi network name to broadcast
 #   --password PSK     Wi-Fi passphrase (8-63 characters)
+#   --timezone ZONE    e.g. America/Los_Angeles
 #   --skip-apt         don't touch apt (useful when re-running offline)
 #   --skip-ap          don't reconfigure Wi-Fi (app + service only)
 #   --yes              never prompt
@@ -20,12 +21,13 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 ROOT="$(repo_root)"
 USER_NAME="$(service_user)"
-SSID=""; PSK=""; SKIP_APT=0; SKIP_AP=0; ASSUME_YES=0
+SSID=""; PSK=""; TIMEZONE=""; SKIP_APT=0; SKIP_AP=0; ASSUME_YES=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ssid)      SSID="$2"; shift 2 ;;
     --password)  PSK="$2"; shift 2 ;;
+    --timezone)  TIMEZONE="$2"; shift 2 ;;
     --skip-apt)  SKIP_APT=1; shift ;;
     --skip-ap)   SKIP_AP=1; shift ;;
     --yes|-y)    ASSUME_YES=1; shift ;;
@@ -144,6 +146,40 @@ AP_CHANNEL="$(yaml_get "$CONFIG" ap channel)";   AP_CHANNEL="${AP_CHANNEL:-6}"
 AP_COUNTRY="$(yaml_get "$CONFIG" ap country)";   AP_COUNTRY="${AP_COUNTRY:-US}"
 BLOCK_NET="$(yaml_get "$CONFIG" ap block_client_internet)"; BLOCK_NET="${BLOCK_NET:-True}"
 UPLINK="$(yaml_get "$CONFIG" uplink interface)"; UPLINK="${UPLINK:-eth0}"
+
+# ---------------------------------------------------------------------------
+step "Timezone"
+# The timezone was never set during imaging. Video segment files are named in
+# UTC (deliberately — that cannot drift), but the clock burned into the picture
+# is local, and it is what you read when matching footage to where you walked.
+CURRENT_TZ="$(timedatectl show -p Timezone --value 2>/dev/null || echo '')"
+info "currently: ${CURRENT_TZ:-unknown}"
+if [[ -n "$TIMEZONE" ]]; then
+  sudo timedatectl set-timezone "$TIMEZONE" && ok "set to $TIMEZONE"
+elif [[ "$CURRENT_TZ" == "Etc/UTC" || "$CURRENT_TZ" == "UTC" || -z "$CURRENT_TZ" ]]; then
+  if [[ "$ASSUME_YES" -eq 1 ]]; then
+    warn "timezone looks unset; leaving it at ${CURRENT_TZ:-unknown}."
+    warn "the burned-in video clock will read UTC. Pass --timezone to change it."
+  else
+    warn "the timezone looks unset, so the clock burned into the video will read UTC"
+    read -r -p "    Timezone (e.g. America/Los_Angeles, blank to keep): " ANSWER
+    if [[ -n "$ANSWER" ]]; then
+      sudo timedatectl set-timezone "$ANSWER" && ok "set to $ANSWER"
+    else
+      info "left as-is"
+    fi
+  fi
+else
+  ok "already set"
+fi
+
+if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q yes; then
+  ok "clock is NTP-synchronised"
+else
+  warn "clock is NOT NTP-synchronised yet. The Pi has no real-time clock, so"
+  warn "every timestamp — and every video correlation — depends on this."
+  warn "It should sort itself out once the cellular uplink is up."
+fi
 
 # ---------------------------------------------------------------------------
 if [[ "$SKIP_AP" -eq 1 ]]; then

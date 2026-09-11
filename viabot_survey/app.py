@@ -124,6 +124,8 @@ def create_app(config: Config, runner: SurveyRunner, storage: Storage,
         payload = runner.status()
         payload["system"] = sysinfo_cache.get()
         payload["version"] = __version__
+        payload["thresholds_provisional"] = bool(
+            config["thresholds"].get("provisional", False))
         return jsonify(payload)
 
     @app.route("/api/history")
@@ -209,9 +211,10 @@ def create_app(config: Config, runner: SurveyRunner, storage: Storage,
     def api_export_samples(run_id: str):
         if storage.get_run(run_id) is None:
             return jsonify({"error": "unknown run"}), 404
-        columns = ["ts", "iso_time", "status", "rtt_ms", "loss_pct", "jitter_ms",
-                   "dns_ms", "rsrp", "rsrq", "sinr", "rssi", "band", "cell_id",
-                   "tech", "video_file", "video_offset_s", "clock_synced"]
+        columns = ["ts", "iso_utc", "iso_local", "status", "rtt_ms", "loss_pct",
+                   "jitter_ms", "dns_ms", "rsrp", "rsrq", "sinr", "rssi", "band",
+                   "cell_id", "tech", "video_file", "video_offset_s",
+                   "clock_synced", "undervoltage"]
 
         def generate():
             buffer = io.StringIO()
@@ -219,7 +222,8 @@ def create_app(config: Config, runner: SurveyRunner, storage: Storage,
             writer.writerow(columns)
             yield _drain(buffer)
             for row in storage.iter_samples(run_id):
-                row["iso_time"] = _iso(row["ts"])
+                row["iso_utc"] = _iso_utc(row["ts"])
+                row["iso_local"] = _iso(row["ts"])
                 writer.writerow([row.get(name) for name in columns])
                 yield _drain(buffer)
 
@@ -231,13 +235,14 @@ def create_app(config: Config, runner: SurveyRunner, storage: Storage,
     def api_export_marks(run_id: str):
         if storage.get_run(run_id) is None:
             return jsonify({"error": "unknown run"}), 404
-        columns = ["ts", "iso_time", "category", "note", "status", "video_file",
-                   "video_offset_s"]
+        columns = ["ts", "iso_utc", "iso_local", "category", "note", "status",
+                   "video_file", "video_offset_s"]
         buffer = io.StringIO()
         writer = csv.writer(buffer)
         writer.writerow(columns)
         for mark in storage.list_marks(run_id):
-            mark["iso_time"] = _iso(mark["ts"])
+            mark["iso_utc"] = _iso_utc(mark["ts"])
+            mark["iso_local"] = _iso(mark["ts"])
             writer.writerow([mark.get(name) for name in columns])
         return Response(buffer.getvalue(), mimetype="text/csv",
                         headers={"Content-Disposition":
@@ -326,9 +331,21 @@ def _drain(buffer: io.StringIO) -> str:
 
 
 def _iso(ts: float | None) -> str:
+    """Local time, with the UTC offset spelled out.
+
+    A bare local timestamp in an exported file is ambiguous, and this rig's
+    entire output is timestamps.
+    """
     if ts is None:
         return ""
-    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts))
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(ts))
+
+
+def _iso_utc(ts: float | None) -> str:
+    """UTC, matching how video segment files are named."""
+    if ts is None:
+        return ""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
 
 def build_report(storage: Storage, run: dict) -> dict:

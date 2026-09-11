@@ -184,13 +184,28 @@
       ["CPU temp", fmt(system.cpu_temp_c, 1, " °C")],
       ["Uptime", duration(system.uptime_s)]
     ];
+    if (system.timezone_info) {
+      rows.push(["Timezone", (system.timezone_info.configured ||
+                              system.timezone_info.name) +
+                             " (" + system.timezone_info.utc_offset + ")"]);
+    }
+    if (system.power) {
+      // Worth its own row: a sagging supply degrades measurements in a way
+      // that reads as bad coverage.
+      rows.push(["Power", system.power.undervoltage_now
+        ? "UNDERVOLTAGE NOW — check the power splice"
+        : (system.power.undervoltage_since_boot
+            ? "dipped since boot — watch the power splice"
+            : "ok")]);
+    }
     if (system.disk) {
       rows.push(["Disk free", fmt(system.disk.free_mb / 1000, 1, " GB") +
                  " (" + fmt(system.disk.used_pct, 0, "% used") + ")"]);
     }
     var html = "";
     rows.forEach(function (row) {
-      var warn = /NO —|DOWN|none/.test(String(row[1])) ? ' class="err"' : "";
+      var warn = /NO —|DOWN|none|UNDERVOLTAGE|dipped/.test(String(row[1]))
+        ? ' class="err"' : "";
       html += "<dt>" + escapeHtml(row[0]) + "</dt><dd" + warn + ">" +
               escapeHtml(String(row[1])) + "</dd>";
     });
@@ -335,6 +350,7 @@
       renderRun(data.run);
       renderWorkers(data.workers || {});
       renderSystem(data.system);
+      el("provisionalNote").hidden = !data.thresholds_provisional;
     }).catch(function () {
       consecutiveFailures += 1;
       // One dropped poll is normal on a rig that is, by design, walking into

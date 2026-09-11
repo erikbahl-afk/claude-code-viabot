@@ -6,11 +6,18 @@ ramp from an irrelevant corner.
 
 Two things make that reliable:
 
-* ffmpeg writes **segments named by wall clock** (``-strftime 1``), so
-  :meth:`locate` can turn any timestamp into a (file, offset) pair without
-  parsing the video;
-* in ``overlay`` mode the wall clock is also **burned into the picture**,
-  derived from frame PTS rather than render time so it cannot drift.
+* ffmpeg writes **segments named in UTC** (``-strftime 1`` with ``TZ=UTC`` in
+  its environment), so :meth:`locate` can turn any timestamp into a
+  (file, offset) pair without parsing the video — and without depending on what
+  the Pi's timezone happens to be set to. The Pi has no real-time clock and its
+  timezone was never configured during imaging; naming segments in local time
+  meant that setting the timezone later silently shifted every previously
+  recorded run, and that one hour each DST fallback was ambiguous. UTC has
+  neither problem.
+* in ``overlay`` mode the clock is also **burned into the picture**, derived
+  from frame PTS rather than render time so it cannot drift. That one is
+  rendered in *local* time with its UTC offset printed alongside, because the
+  person reviewing footage is matching it against when they were walking.
 
 Output is Matroska in both modes because it survives an abrupt power loss —
 an MP4 killed mid-segment loses its index and will not play at all.
@@ -20,7 +27,10 @@ Video is written to local disk only and deliberately not served over the AP.
 
 from __future__ import annotations
 
+import calendar
 import collections
+import json
+import os
 import re
 import shutil
 import subprocess
@@ -30,8 +40,10 @@ from typing import Any
 
 from .base import STATE_DEGRADED, STATE_FAILED, Worker
 
-SEGMENT_PATTERN = "%Y%m%d-%H%M%S.mkv"
-SEGMENT_RE = re.compile(r"^(\d{8})-(\d{6})\.mkv$")
+# The trailing Z is load-bearing documentation: these names are UTC, and anyone
+# reading the directory should be able to tell at a glance.
+SEGMENT_PATTERN = "%Y%m%dT%H%M%SZ.mkv"
+SEGMENT_RE = re.compile(r"^(\d{8})T(\d{6})Z\.mkv$")
 
 # Checked in order; the first that exists is used for the burned-in clock.
 FONT_CANDIDATES = (
@@ -50,7 +62,12 @@ def find_font() -> str | None:
 
 
 def segment_start_epoch(name: str) -> float | None:
-    """Recover a segment's start time from its ``YYYYmmdd-HHMMSS.mkv`` name."""
+    """Recover a segment's start time from its ``YYYYmmddTHHMMSSZ.mkv`` name.
+
+    Deliberately uses :func:`calendar.timegm` rather than :func:`time.mktime`:
+    the name is UTC, so the result must not depend on the host's timezone at
+    the moment we happen to read it.
+    """
     match = SEGMENT_RE.match(name)
     if not match:
         return None
@@ -58,8 +75,19 @@ def segment_start_epoch(name: str) -> float | None:
         parsed = time.strptime(f"{match.group(1)}{match.group(2)}", "%Y%m%d%H%M%S")
     except ValueError:
         return None
-    # Segment names come from ffmpeg's -strftime, which uses local time.
-    return time.mktime(parsed)
+    return float(calendar.timegm(parsed))
+
+
+def utc_offset_s(at: float | None = None) -> int:
+    """Seconds east of UTC in force locally, DST included."""
+    at = time.time() if at is None else at
+    return -(time.altzone if time.localtime(at).tm_isdst else time.timezone)
+
+
+def format_utc_offset(seconds: int) -> str:
+    sign = "+" if seconds >= 0 else "-"
+    seconds = abs(int(seconds))
+    return f"{sign}{seconds // 3600:02d}{(seconds % 3600) // 60:02d}"
 
 
 def free_disk_mb(path: Path) -> float:
@@ -111,10 +139,18 @@ class CameraWorker(Worker):
             # Derive the printed time from the frame's own PTS plus the capture
             # start, so the label matches when the frame was taken even if
             # encoding lags behind.
-            clock = f"%{{pts\\:localtime\\:{int(start_epoch)}\\:%F %T}}"
+            #
+            # ffmpeg runs with TZ=UTC so that segment filenames are UTC, which
+            # also makes drawtext's "localtime" render UTC. Adding the local
+            # offset to the base gets a local-time clock back in the picture,
+            # and the offset itself is printed after it so the footage says
+            # which zone it is in rather than leaving the reviewer to guess.
+            offset = utc_offset_s(start_epoch)
+            base = int(start_epoch) + offset
+            label = f"%{{pts\\:localtime\\:{base}\\:%F %T}} {format_utc_offset(offset)}"
             drawtext = (
                 f"drawtext=fontfile={font}"
-                f":text={clock}"
+                f":text={label}"
                 ":fontsize=22:fontcolor=white"
                 ":box=1:boxcolor=black@0.6:boxborderw=6"
                 ":x=10:y=10"
@@ -166,9 +202,13 @@ class CameraWorker(Worker):
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._started_at = time.time()
+        # TZ=UTC makes -strftime name segments in UTC; see the module docstring.
+        environment = {**os.environ, "TZ": "UTC"}
         self._proc = subprocess.Popen(
             self.build_command(self.output_dir, self._started_at),
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+            env=environment)
+        self._write_manifest()
         self.emit("info", f"recording to {self.output_dir}")
 
         assert self._proc.stderr is not None
@@ -221,6 +261,35 @@ class CameraWorker(Worker):
                 proc.kill()
                 proc.wait(timeout=5)
         return proc.returncode
+
+    def _write_manifest(self) -> None:
+        """Record how to read this directory, for whoever opens it later.
+
+        Segment names are UTC and the burned-in clock is local; six months from
+        now, on a different machine, that distinction is not guessable from the
+        files alone.
+        """
+        if self.output_dir is None or self._started_at is None:
+            return
+        offset = utc_offset_s(self._started_at)
+        manifest = {
+            "capture_started_epoch": self._started_at,
+            "capture_started_utc": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(self._started_at)),
+            "segment_filenames_are": "UTC",
+            "burned_in_clock_is": "local time",
+            "local_utc_offset_s": offset,
+            "local_utc_offset": format_utc_offset(offset),
+            "timezone": time.strftime("%Z", time.localtime(self._started_at)),
+            "device": self.device,
+            "mode": self.mode,
+            "resolution": f"{self.width}x{self.height}@{self.fps}",
+        }
+        try:
+            (self.output_dir / "manifest.json").write_text(
+                json.dumps(manifest, indent=2) + "\n")
+        except OSError as exc:
+            self.emit("warning", f"could not write video manifest: {exc}")
 
     # -- correlation ---------------------------------------------------------
 

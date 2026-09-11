@@ -69,7 +69,7 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 84 tests, no hardware needed
+.venv/bin/python -m pytest        # 90 tests, no hardware needed
 ```
 
 The suite runs anywhere: workers are tested through their parsing and
@@ -84,12 +84,29 @@ Run the app locally without hijacking your own browser:
 
 ## Still open
 
-- The router's modem-stats API is uncharacterised. `scripts/probe_router.py`
-  exists to discover it; `router.client` defaults to `"null"`.
-- The camera's maximum resolution is uncharacterised
-  (`scripts/probe_camera.sh`).
+**Read `docs/UNVERIFIED.md` first.** Nothing in this repository has run on the
+physical rig, and no Claude session has ever had SSH access to it — every fact
+in the handoffs came from Erik pasting terminal output. Several load-bearing
+assumptions are unconfirmed, above all that `wlan0` can run as an access point.
+`scripts/preflight.sh` answers them in one pass; ask Erik to run it and paste
+the output rather than assuming.
+
+Specifically open:
+
+- Whether the Pi's Wi-Fi can do AP mode. Blocks the whole control plane.
+- Where modem signal metrics live. The modem appears to do its own NAT and
+  present as a plain Ethernet adapter, so the router may have nothing to query;
+  `scripts/probe_router.py` probes both the router and the modem.
+- The camera's real capabilities (`scripts/probe_camera.sh`).
 - No iperf3 server exists yet; Erik plans to stand one up.
-- Nothing has been tested on the physical rig yet — everything in this
-  repository is verified by unit tests and local smoke runs only. Treat the
-  first on-device run as the real test, especially `setup_ap.sh`, which touches
-  NetworkManager, dnsmasq and nftables and cannot be exercised in CI.
+- Coverage thresholds are invented — `thresholds.provisional: true`. The plan
+  is to set them from one real survey walk, not from speculation. Do not quietly
+  treat the current numbers as requirements.
+
+## Working style Erik has asked for
+
+Ask clarifying questions **before** building, not after. A large, plausible
+deliverable built on unverified assumptions is worse than a short question. When
+something is genuinely ambiguous — thresholds, hardware capability, what the
+robot actually needs — put the question to him rather than picking a default and
+documenting the guess.
