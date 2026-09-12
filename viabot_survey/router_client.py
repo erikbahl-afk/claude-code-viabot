@@ -1,16 +1,23 @@
 """Talk to the rig's router to read modem signal statistics.
 
 Signal metrics (RSRP / RSRQ / SINR / band / cell ID) are the single most useful
-coverage measurement available here and they cost zero cellular data — but the
-rig's router runs ViaBot's own OpenWrt build, and its API has not been
-characterised yet. So this module ships three clients:
+coverage measurement available here, and they cost zero cellular data. Getting
+at them is the hard part.
 
-``NullRouterClient``  the default; collects nothing, never fails.
-``UbusRouterClient``  OpenWrt's standard ubus JSON-RPC over /ubus.
-``LuciRouterClient``  the older LuCI RPC endpoint under /cgi-bin/luci/rpc.
+The rig's router was probed and has no API to ask: ``/ubus`` returns 404, there
+is no LuCI RPC, HTTPS is closed, and ``ubus list`` carries no modem object —
+only network interfaces. There is no vendor CLI either. The radio metrics exist
+nowhere on the router at all; they live inside the modem, behind its AT port,
+which is reachable only from a shell on the router. Hence ``at_ssh``, which is
+what the rig actually uses.
 
-Run ``python3 scripts/probe_router.py`` on the Pi to find out which one the
-router answers to, then set ``router.client`` in config/config.yaml.
+``NullRouterClient``       collects nothing, never fails. Still the default.
+``AtOverSshRouterClient``  SSH to the router, talk AT to the modem. Works here.
+``UbusRouterClient``       OpenWrt ubus JSON-RPC. Kept for a router that has it.
+``LuciRouterClient``       the older LuCI RPC endpoint. Same.
+
+Run ``python3 scripts/probe_router.py`` on the Pi against an unfamiliar router
+to see which of these it answers to, then set ``router.client``.
 
 TLS note: the router serves a self-signed certificate on its own LAN address.
 Certificate verification is therefore disabled *for requests to the router
@@ -20,8 +27,13 @@ only*. Nothing else in this project skips verification.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import ssl
+import subprocess
+import threading
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -344,6 +356,222 @@ def parse_qeng(text: str) -> dict[str, Any]:
     return {}
 
 
+# ---------------------------------------------------------------------------
+# AT commands over SSH
+# ---------------------------------------------------------------------------
+
+#: The modem's AT command port on the rig's router. Quectel modems expose four
+#: serial ports; ttyUSB2 is the AT interpreter on every one we have seen.
+DEFAULT_AT_DEVICE = "/dev/ttyUSB2"
+
+#: The one command we need. ``servingcell`` reports the cell the modem is
+#: actually attached to, with its signal levels, which is the whole point.
+DEFAULT_AT_COMMAND = 'AT+QENG="servingcell"'
+
+#: SSH options every connection needs.
+#:
+#: The two ``+ssh-rsa`` lines are not optional: the router's Dropbear offers
+#: only an RSA host key, which modern OpenSSH refuses by default, and without
+#: them the connection fails before asking for a password.
+#:
+#: Host key checking is off *for this connection only*, and deliberately. The
+#: rig meets a different router at the same address every time one is swapped
+#: out of the fleet, and the last swap stopped SSH dead with a host-key warning
+#: that took a human with a keyboard to clear. A rig that quietly stops
+#: recording signal halfway through a survey because a router was replaced is a
+#: worse outcome than the risk being guarded against here, which is someone
+#: physically splicing the Ethernet cable between the Pi and its own router.
+SSH_OPTIONS = (
+    "-o", "HostKeyAlgorithms=+ssh-rsa",
+    "-o", "PubkeyAcceptedAlgorithms=+ssh-rsa",
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "UserKnownHostsFile=/dev/null",
+    "-o", "LogLevel=ERROR",
+    "-o", "ConnectTimeout=10",
+    # Notice a dead link in ~15 s rather than blocking until TCP gives up.
+    "-o", "ServerAliveInterval=5",
+    "-o", "ServerAliveCountMax=3",
+)
+
+
+def at_stream_script(device: str = DEFAULT_AT_DEVICE,
+                     command: str = DEFAULT_AT_COMMAND,
+                     interval_s: float = 2.0) -> str:
+    """Shell for the router that streams one modem reading per interval.
+
+    The naive approach — one SSH connection per reading — spends most of a
+    survey doing TCP and crypto handshakes. Instead a single connection holds
+    one reader on the port for the whole walk and pokes the modem on a timer,
+    so the cost per reading is a printf.
+
+    Reading and writing are separate because the port is a character device,
+    not a request/response socket: ``cat`` must already be listening when the
+    command goes in or the reply is lost to nobody.
+
+    The stale-reader sweep at the top matters more than it looks. A ``cat`` left
+    over from a dropped connection steals characters from the new one, and the
+    symptom is not silence but readings that arrive torn in half — which looks
+    like a hardware fault and is not one.
+    """
+    interval = max(1.0, float(interval_s))
+    return "\n".join([
+        f"for p in $(ps | grep '[c]at {device}' | awk '{{print $1}}'); "
+        "do kill \"$p\" 2>/dev/null; done",
+        "trap 'kill $R 2>/dev/null' EXIT INT TERM HUP",
+        f"cat {device} & R=$!",
+        "while kill -0 $R 2>/dev/null; do",
+        f"printf '{command}\\r\\n' > {device} || break",
+        f"sleep {interval:g}",
+        "done",
+    ])
+
+
+class AtOverSshRouterClient(RouterClient):
+    """Read modem signal over SSH to the router, by talking AT to the modem.
+
+    This router has no API to ask: no ubus over HTTP, no LuCI RPC, no vendor
+    CLI, no modem object on the bus at all. The radio metrics exist only inside
+    the modem, reachable only through its AT port, which is reachable only from
+    a shell on the router. So that is what this does.
+
+    Authentication is by SSH key when one is set up, and by password otherwise.
+    Neither is better in every case, so both work: a key leaves no secret on the
+    Pi but has to be installed on each router, while a password needs nothing
+    done to the router — which matters for a rig that meets a different unit out
+    of the fleet each time — at the cost of living in ``config/config.yaml``.
+    That file already holds the Wi-Fi passphrase, is gitignored, and is redacted
+    before anything reaches the database or the API.
+    """
+
+    name = "at_ssh"
+
+    def __init__(self, address: str, username: str = "root", password: str = "",
+                 device: str = DEFAULT_AT_DEVICE, command: str = DEFAULT_AT_COMMAND,
+                 interval_s: float = 2.0, **kwargs: Any) -> None:
+        self.address = address
+        self.username = username or "root"
+        self.password = password or ""
+        self.device = device or DEFAULT_AT_DEVICE
+        self.command = command or DEFAULT_AT_COMMAND
+        self.interval_s = max(1.0, float(interval_s))
+        self._proc: subprocess.Popen | None = None
+        self._reader: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._latest: dict[str, Any] = {}
+        self._latest_ts: float = 0.0
+        self._stderr: str = ""
+        self._last_start: float = 0.0
+
+    # -- command -------------------------------------------------------------
+
+    def build_command(self) -> list[str]:
+        """The full argv, ready to run. Separate so it can be tested."""
+        script = at_stream_script(self.device, self.command, self.interval_s)
+        ssh = ["ssh", *SSH_OPTIONS]
+        if self.password:
+            # -e reads the password from the environment, not the command line.
+            # sshpass -p would put it in argv, where every user on the Pi could
+            # read it out of ps for as long as the survey runs.
+            ssh = ["sshpass", "-e", *ssh,
+                   "-o", "PubkeyAuthentication=no",
+                   "-o", "PreferredAuthentications=password"]
+        else:
+            ssh += ["-o", "BatchMode=yes"]
+        return [*ssh, f"{self.username}@{self.address}", script]
+
+    def build_env(self) -> dict[str, str] | None:
+        """Environment for the SSH process: where the password travels."""
+        if not self.password:
+            return None
+        return {**os.environ, "SSHPASS": self.password}
+
+    def missing_tool(self) -> str | None:
+        """Name whichever required binary is not installed, if any."""
+        for tool in (["sshpass"] if self.password else []) + ["ssh"]:
+            if shutil.which(tool) is None:
+                return tool
+        return None
+
+    # -- stream --------------------------------------------------------------
+
+    #: Never reconnect faster than this. A wrong password makes ssh exit at
+    #: once, and without a floor the rig would retry it every poll for the
+    #: length of a survey — a good way to be throttled or locked out by a
+    #: router that counts failed logins.
+    MIN_RECONNECT_S = 15.0
+
+    def _start(self) -> None:
+        since = time.monotonic() - self._last_start
+        if self._last_start and since < self.MIN_RECONNECT_S:
+            raise RuntimeError(
+                self._stderr or f"waiting {self.MIN_RECONNECT_S - since:.0f}s to reconnect")
+        missing = self.missing_tool()
+        if missing:
+            raise RuntimeError(f"{missing} is not installed")
+        self._last_start = time.monotonic()
+        self._stderr = ""
+        self._proc = subprocess.Popen(
+            self.build_command(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL, text=True, errors="replace", bufsize=1,
+            env=self.build_env(),
+        )
+        self._reader = threading.Thread(target=self._read, args=(self._proc,),
+                                        name="at-ssh-reader", daemon=True)
+        self._reader.start()
+
+    def _read(self, proc: subprocess.Popen) -> None:
+        try:
+            for line in proc.stdout:  # type: ignore[union-attr]
+                fields = parse_qeng(line)
+                if not fields:
+                    continue
+                with self._lock:
+                    self._latest = fields
+                    self._latest_ts = time.time()
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                self._stderr = (proc.stderr.read() or "").strip()[:300]  # type: ignore[union-attr]
+            except (OSError, ValueError):
+                pass
+
+    def _alive(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    # -- RouterClient --------------------------------------------------------
+
+    def fetch(self) -> dict[str, Any]:
+        """Return the newest reading, or raise so the worker shows degraded."""
+        if not self._alive():
+            self.close()
+            self._start()
+
+        with self._lock:
+            latest, age = dict(self._latest), time.time() - self._latest_ts
+
+        # Three intervals of silence means the stream is up but the modem is
+        # not answering — a real condition, and not one to report stale numbers
+        # through. Ten seconds of grace covers the first connection.
+        if not latest or age > max(10.0, self.interval_s * 3):
+            detail = self._stderr or f"no reading for {age:.0f}s"
+            raise RuntimeError(f"no modem reading: {detail}")
+        return latest
+
+    def close(self) -> None:
+        proc, self._proc = self._proc, None
+        if proc is None:
+            return
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        reader, self._reader = self._reader, None
+        if reader is not None:
+            reader.join(timeout=2)
+
+
 def build_client(config: dict, router_address: str) -> RouterClient:
     """Construct the client named by ``router.client`` in the config."""
     kind = str(config.get("client", "null")).lower()
@@ -362,4 +590,13 @@ def build_client(config: dict, router_address: str) -> RouterClient:
         )
     if kind == "luci":
         return LuciRouterClient(router_address, scheme="https", **common)
-    raise ValueError(f"unknown router client {kind!r} (expected null, ubus or luci)")
+    if kind in ("at_ssh", "at-ssh", "at"):
+        return AtOverSshRouterClient(
+            router_address,
+            device=config.get("at_device") or DEFAULT_AT_DEVICE,
+            command=config.get("at_command") or DEFAULT_AT_COMMAND,
+            interval_s=float(config.get("interval_s", 2) or 2),
+            **common,
+        )
+    raise ValueError(
+        f"unknown router client {kind!r} (expected null, at_ssh, ubus or luci)")

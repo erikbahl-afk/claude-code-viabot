@@ -73,7 +73,8 @@ see the commit for 2026-09-11.
 | **Disk and memory** | 117 GB card, 107 GB free. 1.8 GB RAM. CPU 34.6 °C at idle. |
 | **Power** | `throttled=0x0` — clean, no undervoltage since boot. Measured on mains-adjacent conditions, not mid-walk. |
 | **Uplink** | Router 0.4 ms; 8.8.8.8 at 40–57 ms, 0% loss. Egress address is in T-Mobile space. |
-| **The modem** | The next hop past the router is **192.168.225.1** — the Quectel factory default, consistent with the modem doing its own NAT. See [ROUTER.md](ROUTER.md). |
+| **The modem** | A **Quectel EP06-A** — LTE Cat 6, *not* 5G, whatever LuCI's "Protocol: 5G" interface label says. The next hop past the router is 192.168.225.1, the Quectel factory default, consistent with it doing its own NAT. |
+| **Signal metrics** | Settled. The router has no modem API at all — `/ubus` 404s, there is no LuCI RPC, and `ubus list` carries no modem object. The readings come from `AT+QENG="servingcell"` on `/dev/ttyUSB2`, over SSH from the Pi. `AT+QRSRP` is unsupported on this firmware. See [ROUTER.md](ROUTER.md). |
 
 ## Never established at all
 
@@ -85,9 +86,15 @@ thresholds that colour the dashboard are therefore invented. They are marked
 is to do one real survey walk and set them from what the data actually looks
 like.
 
-**Where the signal metrics live.** See [ROUTER.md](ROUTER.md) — the modem
-appears to do its own NAT and present as a plain Ethernet adapter, which would
-mean the router has nothing to query.
+**Which SMA port on the field router is MAIN and which is DIV.** Ports were
+labelled `a`, `b` and `c` and tested one at a time on 2026-09-12. `a` and `c`
+each returned a working serving-cell reading (RSRP −104, SINR 11–12) and `b`
+returned `ERROR`; a+c was also the fastest throughput pair. Antennas are fitted
+to `a` and `c` on that basis, which is a reasonable call — but the test could
+not discriminate. Indoors the ambient signal is strong (RSSI −77) and a bare
+connector couples enough RF for the modem to camp regardless, so every
+configuration looked alike and consecutive rounds contradicted each other.
+Treat the MAIN/DIV assignment as unknown.
 
 **Which garages are in scope**, how many levels, or what prompted the project.
 
@@ -98,8 +105,9 @@ Verified in the original session and safe to rely on:
 - 12.1–12.4 V at the router's input jack, across two separate checks.
 - The Pi boots, is reachable over SSH at `garage-surveyor-01.local`, and its
   hostname is `garage-survey**or**-01`, not `garage-survey-01`.
-- The router holds a 5G registration and passes traffic; the Pi reaches
-  `8.8.8.8` and resolves `google.com` at 0% loss, ~48–56 ms.
+- The router passes traffic; the Pi reaches `8.8.8.8` and resolves
+  `google.com` at 0% loss, ~48–56 ms. The registration is LTE, not 5G —
+  band 12 on T-Mobile (310/260), on a 5 MHz carrier.
 - The camera enumerates as `LRCP USB2.0` on `/dev/video0`, works on **USB 2.0**
   (the USB 3.0 assumption was wrong), and produced a valid test image. Its full
   mode list is now known — see the table above.

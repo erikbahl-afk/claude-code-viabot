@@ -95,7 +95,7 @@ indoor positioning. Do not make Pause merely cosmetic.
 | `viabot_survey/app.py` | Flask: captive portal, API, report building |
 | `viabot_survey/workers/` | One file per measurement source, all subclass `base.Worker` |
 | `viabot_survey/storage.py` | SQLite; add columns to `SAMPLE_COLUMNS` when extending `samples` |
-| `viabot_survey/router_client.py` | Modem stats; `normalize_signal` matches field names across firmwares |
+| `viabot_survey/router_client.py` | Modem stats. `AtOverSshRouterClient` is the one that works here: SSH to the router, AT to the modem. `normalize_signal` matches field names across firmwares for the HTTP clients |
 | `scripts/setup.sh`, `setup_ap.sh` | Provisioning; both idempotent, both re-runnable |
 | `config/config.example.yaml` | The default layer *and* the documentation for every setting |
 
@@ -136,9 +136,11 @@ starts and ends, the camera records with a burned-in clock, and clips are cut.
 
 Specifically open:
 
-- Where modem signal metrics live. The modem appears to do its own NAT and
-  present as a plain Ethernet adapter, so the router may have nothing to query;
-  `scripts/probe_router.py` probes both the router and the modem.
+- Which SMA port is MAIN and which is DIV on the field router. Ports `a` and `c`
+  are the two that produced working readings and the pair is in use, but the
+  tests never separated them — indoors the signal is strong enough that bare
+  connectors couple plenty of RF, so every configuration looked alike. Do not
+  write this down as established.
 - The camera's real capabilities (`scripts/probe_camera.sh`).
 - No iperf3 server exists yet; Erik plans to stand one up.
 - Dead-zone thresholds are invented — `deadzone.provisional: true` (80% loss or
