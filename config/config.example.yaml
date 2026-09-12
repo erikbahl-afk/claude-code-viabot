@@ -148,6 +148,42 @@ router:
   ubus_method: null
 
 # ----------------------------------------------------------------------------
+# Publishing: where a finished run goes so somebody can read it.
+#
+# When a walk ends the rig writes a report page, then queues it, the dead-zone
+# clips, and (on request only) the full recording. The queue lives in the
+# database, so pulling the plug mid-upload costs one chunk rather than the run:
+# the next power-on asks the receiver how much it already has and carries on
+# from there.
+#
+# Nothing uploads while a run is in progress. The upload would travel over the
+# cellular link the survey is measuring, and would manufacture the latency and
+# loss the walk exists to record.
+#
+# The receiver is in server/ — see server/README.md to stand one up. Leave
+# `enabled: false` and the rig keeps every report locally at
+# http://192.168.50.1/api/runs/<run-id>/report.html instead.
+# ----------------------------------------------------------------------------
+publish:
+  enabled: false
+  # Base URL of the receiving server, e.g. https://surveys.example.com
+  url: ""
+  # Shared secret; must match VIABOT_RECEIVER_TOKEN on the server.
+  token: ""
+
+  # Bytes per request. Every chunk boundary is a place a power cut is free, so
+  # smaller is safer and slower. 512 KiB costs about a second of progress.
+  chunk_bytes: 524288
+  # Seconds between passes over the queue while idle.
+  interval_s: 60
+  timeout_s: 60
+
+  # Offer the full walk recording behind a button on the report rather than
+  # sending it. Clips are a few tens of megabytes; the whole walk is a few
+  # hundred, on a SIM whose plan nobody has checked.
+  offer_full_video: true
+
+# ----------------------------------------------------------------------------
 # Camera. Records continuously to local disk for later review — video is
 # deliberately NOT served over the Wi-Fi AP.
 #

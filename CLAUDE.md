@@ -81,6 +81,19 @@ to the phone; the screen is small and he is walking.
 still cheerfully reporting connection quality, and the entire walk is wasted.
 It gets a health chip *and* a full-width alert.
 
+**Uploading during a walk would poison the walk.** The publisher sends over
+the same cellular link the survey is measuring, so it idles while a run is
+active and resumes afterwards. `PublisherWorker.busy` is what enforces this;
+anything new that talks to the network needs the same treatment.
+
+**Publishing assumes the power will be cut.** A customer may switch the rig off
+the moment a walk ends, or halfway through a 60 MB clip. The upload queue is in
+SQLite, progress is recorded per chunk, and a resume always asks the receiver
+how many bytes it holds rather than trusting the local number — power can be
+cut between a chunk landing and the rig learning that it did. Do not "optimise"
+that HEAD away. `tests/test_publish.py` interrupts real transfers to a real
+server; keep it that way, because nothing else catches this class of bug.
+
 **Pause means "this time did not happen".** It stops measuring and recording
 both, so paused seconds leave no samples and no video. That is what makes the
 headline percentage meaningful, since it is a percentage of time and there is no
@@ -94,7 +107,10 @@ indoor positioning. Do not make Pause merely cosmetic.
 | `viabot_survey/deadzones.py` | Detect dead zones from stored samples; cut a clip per zone |
 | `viabot_survey/app.py` | Flask: captive portal, API, report building |
 | `viabot_survey/workers/` | One file per measurement source, all subclass `base.Worker` |
+| `viabot_survey/report.py` | Builds a run's result and renders it as the published page |
+| `viabot_survey/publish.py` | Resumable upload client; the receiver's byte count is the authority |
 | `viabot_survey/storage.py` | SQLite; add columns to `SAMPLE_COLUMNS` when extending `samples` |
+| `server/viabot_receiver.py` | The cloud side: accepts uploads, serves reports. Deployed separately, not on the rig |
 | `viabot_survey/router_client.py` | Modem stats. `AtOverSshRouterClient` is the one that works here: SSH to the router, AT to the modem. `normalize_signal` matches field names across firmwares for the HTTP clients |
 | `scripts/setup.sh`, `setup_ap.sh` | Provisioning; both idempotent, both re-runnable |
 | `config/config.example.yaml` | The default layer *and* the documentation for every setting |
@@ -106,7 +122,7 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 127 tests, no camera or rig needed
+.venv/bin/python -m pytest        # 180 tests, no camera or rig needed
 ```
 
 Most of the suite runs anywhere: workers are tested through their parsing and

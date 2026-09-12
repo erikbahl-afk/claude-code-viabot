@@ -16,11 +16,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import deadzones, sysinfo
+from . import deadzones, report, sysinfo
 from .config import Config, redact
+from .publish import PublishClient
 from .router_client import build_client
 from .storage import Storage
 from .workers import CameraWorker, DnsWorker, Iperf3Worker, PingWorker, RouterWorker
+from .workers.publisher import PublisherWorker
 
 log = logging.getLogger(__name__)
 
@@ -126,7 +128,26 @@ class SurveyRunner:
             enabled=config["camera"]["enabled"],
             on_event=self._worker_event("camera"),
         )
-        self.workers = [self.ping, self.dns, self.iperf, self.router, self.camera]
+        publish = config["publish"]
+        self.publisher = PublisherWorker(
+            client=PublishClient(
+                base_url=publish["url"],
+                token=publish["token"],
+                chunk_bytes=publish["chunk_bytes"],
+                timeout=publish["timeout_s"],
+            ),
+            storage=storage,
+            # A survey must never compete with its own upload for the link it
+            # is measuring, so the queue idles for the length of a walk.
+            busy=lambda: self.active_run_id is not None,
+            report_for=self._report_bundle,
+            assemble_video=self.assemble_full_video,
+            interval_s=publish["interval_s"],
+            enabled=bool(publish["enabled"]) and bool(publish["url"]),
+            on_event=self._worker_event("publisher"),
+        )
+        self.workers = [self.ping, self.dns, self.iperf, self.router, self.camera,
+                        self.publisher]
 
     # -- events --------------------------------------------------------------
 
@@ -341,7 +362,91 @@ class SurveyRunner:
         self.storage.add_event(message, source="runner", run_id=run_id)
         self._wrapup = {"run_id": run_id, "summary": summary,
                         "zones": [z.as_dict() for z in zones]}
+        try:
+            self.queue_for_publishing(run_id)
+        except Exception:  # noqa: BLE001 - publishing must never lose a result
+            log.exception("could not queue %s for publishing", run_id)
+            self.storage.add_event(
+                "the run was analysed but could not be queued for upload; "
+                "its report and clips are still on the rig",
+                level="warning", source="publisher", run_id=run_id)
         return self._wrapup
+
+    # -- publishing ----------------------------------------------------------
+
+    def _report_bundle(self, run_id: str) -> tuple[Path, dict]:
+        """Where a run's publishable files are built, and the report itself."""
+        run = self.storage.get_run(run_id)
+        built = report.build_report(self.storage, run) if run else {}
+        return Path(self.config.data_dir) / "reports" / run_id, built
+
+    def queue_for_publishing(self, run_id: str) -> int:
+        """Write the report and hand the whole bundle to the upload queue.
+
+        Queued, not uploaded: the rig may be underground with no usable link,
+        or about to be switched off. Everything here is durable, so whenever
+        the rig next has power and is not walking, it carries on.
+        """
+        if not self.config["publish"]["enabled"]:
+            return 0
+        bundle_dir, built = self._report_bundle(run_id)
+        if not built:
+            return 0
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+
+        page = bundle_dir / "index.html"
+        page.write_text(report.render_html(
+            built, deadzone_config=self.config["deadzone"]), encoding="utf-8")
+        self.storage.enqueue_upload(run_id, "report", str(page), "index.html",
+                                    page.stat().st_size)
+        queued = 1
+
+        for zone in built.get("dead_zones") or []:
+            clip = zone.get("clip_path")
+            if not clip or not Path(clip).exists():
+                continue
+            name = Path(clip).name
+            self.storage.enqueue_upload(run_id, "clip", clip, f"clips/{name}",
+                                        Path(clip).stat().st_size)
+            queued += 1
+
+        # The whole walk is several hundred megabytes against a few tens for
+        # the clips, over a metered link, so it waits to be asked for. It is
+        # not even assembled until then.
+        if self.config["publish"]["offer_full_video"]:
+            self.storage.enqueue_upload(
+                run_id, "video", str(bundle_dir / "full.mp4"), "video/full.mp4",
+                None, held=True)
+
+        self.storage.add_event(f"queued {queued} file(s) for upload",
+                               source="publisher", run_id=run_id)
+        return queued
+
+    def assemble_full_video(self, run_id: str, out_path: Path) -> None:
+        """Join the run's segments into one file, without re-encoding.
+
+        Built only when somebody asks for it. Stream-copied, so it costs disk
+        and a little I/O rather than an hour of the Pi's CPU.
+        """
+        video_dir = self.config.video_dir / run_id
+        segments = _segments_on_disk(video_dir)
+        if not segments:
+            raise FileNotFoundError(f"no video segments for {run_id}")
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        listing = out_path.with_suffix(".txt")
+        listing.write_text("".join(
+            f"file '{(video_dir / name).resolve()}'\n" for name, _ in segments))
+        try:
+            deadzones._ffmpeg(["-f", "concat", "-safe", "0", "-i", str(listing),
+                               "-c", "copy", str(out_path)], timeout=1800)
+        finally:
+            listing.unlink(missing_ok=True)
+        if not out_path.exists() or out_path.stat().st_size == 0:
+            out_path.unlink(missing_ok=True)
+            raise RuntimeError("ffmpeg produced no video")
+        self.storage.enqueue_upload(run_id, "video", str(out_path),
+                                    "video/full.mp4", out_path.stat().st_size)
 
     @property
     def active_run_id(self) -> str | None:

@@ -1,0 +1,34 @@
+# Survey receiver. Copy to /etc/systemd/system/, edit the paths and the
+# environment file, then:
+#
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now viabot-receiver
+#
+[Unit]
+Description=ViaBot survey receiver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=viabot
+Group=viabot
+WorkingDirectory=/opt/viabot-receiver
+# Holds VIABOT_RECEIVER_TOKEN and VIABOT_RECEIVER_VIEWER_PASSWORD. Keep it
+# chmod 600 and owned by root: it is the only thing standing between the
+# internet and every survey you have ever run.
+EnvironmentFile=/etc/viabot-receiver.env
+Environment=VIABOT_RECEIVER_DATA=/var/lib/viabot-receiver
+ExecStart=/opt/viabot-receiver/.venv/bin/python viabot_receiver.py --host 127.0.0.1 --port 8089
+Restart=always
+RestartSec=5
+
+# The service only ever needs to read its own code and write its data.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/viabot-receiver
+
+[Install]
+WantedBy=multi-user.target

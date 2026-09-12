@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -107,6 +107,35 @@ CREATE TABLE IF NOT EXISTS events (
     message TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+
+-- One row per file to be published, surviving reboots on purpose.
+--
+-- The rig loses power for real, and it may well lose it halfway through
+-- sending a 60 MB clip over a cellular link. A queue held in memory would
+-- forget the whole run; this one wakes up knowing exactly what it still owes.
+--
+-- sent_bytes is progress, not truth. The receiving end is the authority on how
+-- much it actually has, because power can be cut between a chunk landing on
+-- the server and the acknowledgement reaching the rig. Every resume starts by
+-- asking.
+CREATE TABLE IF NOT EXISTS uploads (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id      TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    kind        TEXT NOT NULL,              -- report | clip | video
+    local_path  TEXT NOT NULL,
+    remote_name TEXT NOT NULL,
+    size_bytes  INTEGER,
+    sent_bytes  INTEGER NOT NULL DEFAULT 0,
+    -- held: queued but deliberately not sent yet (the full video, until asked
+    -- for). pending: send it. done. failed: give up, with a reason.
+    state       TEXT NOT NULL DEFAULT 'pending',
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    last_error  TEXT,
+    created_ts  REAL NOT NULL,
+    updated_ts  REAL NOT NULL,
+    UNIQUE (run_id, remote_name)
+);
+CREATE INDEX IF NOT EXISTS idx_uploads_state ON uploads(state, id);
 """
 
 SAMPLE_COLUMNS = (
@@ -165,6 +194,99 @@ class Storage:
     def _write(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
         with self._write_lock:
             return self.connection().execute(sql, tuple(params))
+
+    # -- uploads -------------------------------------------------------------
+
+    def enqueue_upload(self, run_id: str, kind: str, local_path: str,
+                       remote_name: str, size_bytes: int | None = None,
+                       held: bool = False) -> None:
+        """Add a file to the publish queue, or leave an existing row alone.
+
+        Re-analysing a run re-queues its report, and that must not undo the
+        progress of an upload already halfway through.
+        """
+        now = time.time()
+        self._write(
+            """INSERT INTO uploads
+                 (run_id, kind, local_path, remote_name, size_bytes, state,
+                  created_ts, updated_ts)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(run_id, remote_name) DO UPDATE SET
+                 local_path = excluded.local_path,
+                 size_bytes = excluded.size_bytes,
+                 updated_ts = excluded.updated_ts,
+                 -- A finished upload stays finished; a failed one gets
+                 -- another chance now that something has changed.
+                 state = CASE WHEN uploads.state = 'done' THEN 'done'
+                              WHEN uploads.state = 'failed' THEN 'pending'
+                              ELSE uploads.state END""",
+            (run_id, kind, str(local_path), remote_name, size_bytes,
+             "held" if held else "pending", now, now),
+        )
+
+    def pending_uploads(self, limit: int = 50) -> list[dict]:
+        """Oldest first, so a run finishes publishing before the next starts."""
+        rows = self.connection().execute(
+            "SELECT * FROM uploads WHERE state = 'pending' ORDER BY id LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def release_held_uploads(self, run_id: str, kind: str | None = None) -> int:
+        """Move 'held' rows to 'pending' — someone asked for the full video."""
+        sql = "UPDATE uploads SET state = 'pending', updated_ts = ? WHERE state = 'held' AND run_id = ?"
+        params: list[Any] = [time.time(), run_id]
+        if kind:
+            sql += " AND kind = ?"
+            params.append(kind)
+        return self._write(sql, params).rowcount
+
+    def update_upload(self, upload_id: int, *, sent_bytes: int | None = None,
+                      state: str | None = None, error: str | None = None,
+                      bump_attempts: bool = False) -> None:
+        sets = ["updated_ts = ?"]
+        params: list[Any] = [time.time()]
+        if sent_bytes is not None:
+            sets.append("sent_bytes = ?")
+            params.append(sent_bytes)
+        if state is not None:
+            sets.append("state = ?")
+            params.append(state)
+        sets.append("last_error = ?")
+        params.append(error)
+        if bump_attempts:
+            sets.append("attempts = attempts + 1")
+        params.append(upload_id)
+        self._write(f"UPDATE uploads SET {', '.join(sets)} WHERE id = ?", params)
+
+    def upload_summary(self, run_id: str | None = None) -> dict[str, Any]:
+        """Counts by state, plus bytes still owed — what the dashboard shows."""
+        where, params = ("WHERE run_id = ?", (run_id,)) if run_id else ("", ())
+        rows = self.connection().execute(
+            f"""SELECT state, COUNT(*) AS files,
+                       SUM(COALESCE(size_bytes, 0) - sent_bytes) AS remaining
+                FROM uploads {where} GROUP BY state""", params).fetchall()
+        by_state = {r["state"]: {"files": r["files"],
+                                 "remaining_bytes": max(0, r["remaining"] or 0)}
+                    for r in rows}
+        return {
+            "by_state": by_state,
+            "queued_files": by_state.get("pending", {}).get("files", 0),
+            "queued_bytes": by_state.get("pending", {}).get("remaining_bytes", 0),
+            "held_files": by_state.get("held", {}).get("files", 0),
+            "failed_files": by_state.get("failed", {}).get("files", 0),
+        }
+
+    def runs_with_held_uploads(self) -> list[str]:
+        """Runs whose full video is sitting on the rig, waiting to be asked for."""
+        rows = self.connection().execute(
+            "SELECT DISTINCT run_id FROM uploads WHERE state = 'held'").fetchall()
+        return [row["run_id"] for row in rows]
+
+    def list_uploads(self, run_id: str) -> list[dict]:
+        rows = self.connection().execute(
+            "SELECT * FROM uploads WHERE run_id = ? ORDER BY id", (run_id,)).fetchall()
+        return [dict(row) for row in rows]
 
     # -- runs ----------------------------------------------------------------
 

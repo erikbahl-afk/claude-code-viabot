@@ -24,6 +24,7 @@ from flask import (Flask, Response, jsonify, redirect, render_template,
 from . import __version__
 from .config import Config, redact
 from .runner import SurveyRunner
+from .report import build_report, iso_local, iso_utc, render_html
 from .storage import Storage
 from .updater import UpdateError, Updater
 
@@ -257,6 +258,38 @@ def create_app(config: Config, runner: SurveyRunner, storage: Storage,
             return jsonify({"error": "unknown run"}), 404
         return jsonify(build_report(storage, run))
 
+    @app.route("/api/runs/<run_id>/report.html")
+    def api_run_report_html(run_id: str):
+        """The same report as a page — the thing that gets published.
+
+        Served from the rig too, so a report can be read before it has been
+        uploaded anywhere, and so a failed upload is never the only copy.
+        """
+        run = storage.get_run(run_id)
+        if run is None:
+            return jsonify({"error": "unknown run"}), 404
+        page = render_html(build_report(storage, run),
+                           deadzone_config=config["deadzone"],
+                           version=__version__)
+        return Response(page, mimetype="text/html; charset=utf-8")
+
+    @app.route("/api/runs/<run_id>/publish", methods=["POST"])
+    def api_run_publish(run_id: str):
+        """Queue a finished run for upload.
+
+        Runs analysed before publishing was switched on never got queued, and
+        re-cutting clips after a threshold change produces new files worth
+        sending. Queuing is idempotent: a file already uploaded stays uploaded,
+        and one halfway there keeps its progress.
+        """
+        if storage.get_run(run_id) is None:
+            return jsonify({"error": "unknown run"}), 404
+        if not config["publish"]["enabled"]:
+            return jsonify({"error": "publishing is disabled in config"}), 409
+        queued = runner.queue_for_publishing(run_id)
+        return jsonify({"ok": True, "queued": queued,
+                        "uploads": storage.list_uploads(run_id)})
+
     # ---- updates -----------------------------------------------------------
 
     @app.route("/api/update/status")
@@ -332,53 +365,8 @@ def _drain(buffer: io.StringIO) -> str:
     return value
 
 
-def _iso(ts: float | None) -> str:
-    """Local time, with the UTC offset spelled out.
-
-    A bare local timestamp in an exported file is ambiguous, and this rig's
-    entire output is timestamps.
-    """
-    if ts is None:
-        return ""
-    return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(ts))
-
-
-def _iso_utc(ts: float | None) -> str:
-    """UTC, matching how video segment files are named."""
-    if ts is None:
-        return ""
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
-
-
-def build_report(storage: Storage, run: dict) -> dict:
-    """A finished run's result: how much of the walk was usable, and where not.
-
-    Read on a laptop after the walk, not on the phone during it.
-    """
-    samples = list(storage.iter_samples(run["id"]))
-    zones = storage.list_dead_zones(run["id"])
-    total = len(samples)
-
-    status_counts: dict[str, int] = {}
-    for sample in samples:
-        key = sample["status"] or "unknown"
-        status_counts[key] = status_counts.get(key, 0) + 1
-
-    stored = json.loads(run["summary_json"]) if run.get("summary_json") else {}
-    for zone in zones:
-        zone["start_local"] = _iso(zone["start_ts"])
-        zone["start_utc"] = _iso_utc(zone["start_ts"])
-
-    return {
-        "run": run,
-        "summary": stored,
-        "sample_count": total,
-        "walked_s": stored.get("walked_s", round(total * 1.0, 1)),
-        "runnable_pct": run.get("runnable_pct"),
-        "elapsed_s": round((run.get("ended_at") or time.time()) - run["started_at"], 1),
-        "status_counts": status_counts,
-        "status_pct": {k: round(100.0 * v / total, 1)
-                       for k, v in status_counts.items()} if total else {},
-        "dead_zones": zones,
-        "throughput": storage.list_throughput(run["id"]),
-    }
+# Timestamp formatting and the report itself live in report.py, which also
+# renders them as a page. Re-exported here because the CSV exporters and the
+# report API have used these names since the first week.
+_iso = iso_local
+_iso_utc = iso_utc
