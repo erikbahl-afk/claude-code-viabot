@@ -54,6 +54,7 @@ PACKAGES=(
   python3-venv python3-pip git
   ffmpeg v4l-utils fonts-dejavu-core
   iperf3 iputils-ping
+  openssh-client sshpass
   network-manager dnsmasq-base nftables
   iw rfkill
 )

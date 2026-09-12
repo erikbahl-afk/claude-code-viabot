@@ -102,12 +102,48 @@ iperf3:
 #         "ubus"  — OpenWrt ubus JSON-RPC over http://<router>/ubus
 #         "luci"  — legacy LuCI RPC at /cgi-bin/luci/rpc/sys
 # ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# Modem signal metrics: RSRP, RSRQ, SINR, band and cell ID on every sample.
+#
+# These cost no cellular data and they are what distinguishes one kind of dead
+# zone from another. Low RSRP with decent SINR is concrete in the way — expected
+# in a garage, and fixable with an antenna. Decent RSRP with poor SINR is
+# interference or a congested cell, which an antenna will not fix. A cell ID
+# that changes at the same spot every pass is a handover, and handovers are a
+# well-known source of a few dead seconds.
+#
+# client:
+#   "null"     collect nothing. The safe default; the rig works without this.
+#   "at_ssh"   SSH to the router and talk AT to the modem. What this rig uses:
+#              its router has no modem API at all — no ubus over HTTP, no LuCI
+#              RPC, no vendor CLI — so the AT port is the only way in.
+#   "ubus"     OpenWrt ubus JSON-RPC, for a router that exposes one.
+#   "luci"     the older LuCI RPC endpoint, same.
+#
+# Run scripts/probe_router.py against an unfamiliar router to see which fits.
+#
+# For "at_ssh", authentication is by SSH key if the Pi has one the router
+# accepts, and by password otherwise. The password route needs nothing done to
+# the router, which matters when the rig meets a different unit out of the fleet
+# each time; the key route leaves no secret on the Pi but has to be installed on
+# every router. Either way config/config.yaml is gitignored and every value
+# under a key named "password" is masked before it reaches the database, the
+# API or the dashboard.
+# ----------------------------------------------------------------------------
 router:
   client: "null"
+  # Seconds between readings. Signal moves slowly compared with walking pace,
+  # and the floor is 1 s: a faster poll would collect the same number twice.
   interval_s: 2
   username: root
   password: ""
-  # Set by probe_router.py once discovered.
+
+  # at_ssh only. ttyUSB2 is the AT interpreter on every Quectel modem we have
+  # seen; the other three ports on the same modem are not.
+  at_device: /dev/ttyUSB2
+  at_command: 'AT+QENG="servingcell"'
+
+  # ubus only. Set by probe_router.py once discovered.
   ubus_object: null
   ubus_method: null
 
