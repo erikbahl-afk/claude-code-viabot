@@ -123,13 +123,6 @@ iperf3:
 udp_load:
   enabled: false
   server: null
-  port: 5201
-
-  # Match this to what a real Formant teleop session actually uses. It is the
-  # number that decides what the test means: measuring at 25M tells you about a
-  # link you will never ask for, and a garage could fail that while carrying
-  # teleop perfectly. 1.5M is a placeholder, NOT a measured figure.
-  bitrate: 1.5M
 
   # Bytes per datagram. Do not raise this. iperf3 defaults to 32 KB datagrams,
   # which IP then fragments into two dozen packets — lose any one and the whole
@@ -137,23 +130,44 @@ udp_load:
   # 1200-byte video packet would see. 1200 is what WebRTC settles on.
   datagram_bytes: 1200
 
-  # "download" runs the stream server -> rig, the direction video travels and
-  # the only direction that reports jitter and loss at the rig's end.
-  direction: download
-
-  # Runaway guard, not a cost control — the SIM is unlimited. It exists so a
-  # stream that somehow outlives its walk cannot run indefinitely. Set it well
-  # above what a real walk spends (bitrate x duration), because hitting it
-  # mid-walk stops the measurement and leaves the rest of the garage unmeasured.
-  # At 1.5 Mbit/s, 2000 MB is about four hours.
+  # Runaway guard, not a cost control — the SIM is unlimited. Set it well above
+  # what a real walk spends (bitrate x duration), because hitting it mid-walk
+  # stops the measurement and leaves the rest of the garage unmeasured.
   run_data_budget_mb: 2000
 
-  # iperf3's own authentication. Leave blank only for a server that cannot be
-  # reached from the internet — an open one is a bandwidth allowance anyone who
-  # finds the port can spend. server/README.md generates these.
+  # iperf3's own authentication, shared by both directions. Leave blank only
+  # for a server that cannot be reached from the internet — an open one is a
+  # bandwidth allowance anyone who finds the port can spend.
   username: ""
   password: ""
   public_key_path: ""
+
+  # --- uplink: the robot's video, going out of the garage -------------------
+  # Usually the half that decides whether a spot is workable, because cellular
+  # uplink is typically the weaker direction.
+  #
+  # Only the far end can see what arrived, so this runs in blocks and asks the
+  # server what it received; the per-second readings are then written onto the
+  # samples they belong to. That is why it needs its own port: one iperf3
+  # server runs one test at a time, so the two directions cannot share one.
+  uplink_enabled: true
+  uplink_port: 5201
+  # Set from what a real Formant session sends — read it in the operator's
+  # browser at chrome://webrtc-internals, inbound-rtp video. 2M is a
+  # PLACEHOLDER, not a measurement.
+  uplink_bitrate: 2M
+  # Seconds per block. Shorter recovers readings sooner after a dead spot;
+  # longer spends less time re-establishing the test.
+  uplink_block_s: 30
+
+  # --- downlink: the operator's commands, coming in ------------------------
+  # Small, but if it collapses the robot stops taking orders. The rig is the
+  # receiving end here, so these readings arrive live, once a second.
+  downlink_enabled: true
+  downlink_port: 5202
+  # The operator's outbound rate, which is mostly control and telemetry.
+  # Also a placeholder.
+  downlink_bitrate: 300k
 
 # ----------------------------------------------------------------------------
 # ----------------------------------------------------------------------------

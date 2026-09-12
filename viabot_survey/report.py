@@ -150,26 +150,38 @@ def quality_stats(samples: Sequence[dict]) -> dict[str, Any]:
 
 
 def load_stats(samples: Sequence[dict]) -> dict[str, Any]:
-    """What the link did with a real teleop stream on it.
+    """What the link did with a real teleop load on it, each way separately.
 
-    The count of seconds with no reading at all matters as much as the numbers.
-    iperf3's control channel is TCP, so when the link fails badly the stream
-    stops rather than reporting 100% loss — silence here is the severe case,
-    not a gap in the data.
+    A teleop session is asymmetric and the two halves fail differently. Uplink
+    carries the robot's video and is usually the weaker direction, so it is
+    normally what decides whether a spot is workable. Downlink carries the
+    operator's commands: small, but if it collapses the robot stops taking
+    orders.
+
+    The count of seconds with no reading matters as much as the numbers.
+    iperf3's control channel is TCP, so when the link fails badly the test
+    stops rather than reporting 100% loss — silence is the severe case, not a
+    gap in the data.
     """
-    readings = [s for s in samples if s.get("udp_loss_pct") is not None]
-    if not readings:
-        return {"seconds_measured": 0}
-    losses = _numbers(readings, "udp_loss_pct")
-    return {
-        "seconds_measured": len(readings),
-        "seconds_without_stream": len(samples) - len(readings),
-        "jitter_ms": _spread(_numbers(readings, "udp_jitter_ms")),
-        "loss_pct": _spread(losses),
-        "mbps": _spread(_numbers(readings, "udp_mbps")),
-        "mean_loss_pct": round(sum(losses) / len(losses), 1) if losses else None,
-        "clean_seconds": sum(1 for v in losses if v == 0),
-    }
+    out: dict[str, Any] = {}
+    for name, prefix in (("uplink", "udp_up_"), ("downlink", "udp_down_")):
+        readings = [s for s in samples if s.get(prefix + "loss_pct") is not None]
+        if not readings:
+            out[name] = {"seconds_measured": 0}
+            continue
+        losses = _numbers(readings, prefix + "loss_pct")
+        out[name] = {
+            "seconds_measured": len(readings),
+            "seconds_without_stream": len(samples) - len(readings),
+            "jitter_ms": _spread(_numbers(readings, prefix + "jitter_ms")),
+            "loss_pct": _spread(losses),
+            "mbps": _spread(_numbers(readings, prefix + "mbps")),
+            "mean_loss_pct": round(sum(losses) / len(losses), 1) if losses else None,
+            "clean_seconds": sum(1 for v in losses if v == 0),
+        }
+    out["seconds_measured"] = max(out["uplink"]["seconds_measured"],
+                                  out["downlink"]["seconds_measured"])
+    return out
 
 
 def build_report(storage: Any, run: dict) -> dict[str, Any]:
@@ -461,26 +473,39 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
     ])
     load = report.get("under_load") or {}
     if load.get("seconds_measured"):
+        sections = []
+        for name, heading, blurb in (
+            ("uplink", "Uplink &mdash; the robot's video going out",
+             "Usually the half that decides whether a spot is workable: cellular "
+             "uplink is the weaker direction, and this is the heavy stream."),
+            ("downlink", "Downlink &mdash; the operator's commands coming in",
+             "Small, but if it collapses the robot stops taking orders."),
+        ):
+            half = load.get(name) or {}
+            if not half.get("seconds_measured"):
+                continue
+            sections.append(
+                f"<h3>{heading}</h3><p class=\"sub\">{blurb}</p>"
+                '<dl class="stats">' + "".join([
+                    _stat("Seconds measured", str(half["seconds_measured"])),
+                    _stat("Clean seconds", str(half.get("clean_seconds", 0))),
+                    _stat("Mean loss", f"{half.get('mean_loss_pct')}%"
+                          if half.get("mean_loss_pct") is not None else "—"),
+                    _stat("No stream", f"{half.get('seconds_without_stream', 0)}s"),
+                ]) + "</dl>"
+                '<table><thead><tr><th>Measurement</th><th class="num">Best</th>'
+                '<th class="num">Median</th><th class="num">95th</th>'
+                '<th class="num">Worst</th></tr></thead><tbody>'
+                + _spread_row("Jitter", half.get("jitter_ms"), " ms")
+                + _spread_row("Packet loss", half.get("loss_pct"), "%")
+                + "</tbody></table>")
         load_block = (
             "<h2>Under a teleop-sized load</h2>"
-            '<dl class="stats">' + "".join([
-                _stat("Seconds measured", str(load["seconds_measured"])),
-                _stat("Clean seconds", str(load.get("clean_seconds", 0))),
-                _stat("Mean loss", f"{load.get('mean_loss_pct')}%"
-                      if load.get("mean_loss_pct") is not None else "—"),
-                _stat("No stream", f"{load.get('seconds_without_stream', 0)}s"),
-            ]) + "</dl>"
-            '<table><thead><tr><th>Measurement</th><th class="num">Best</th>'
-            '<th class="num">Median</th><th class="num">95th</th>'
-            '<th class="num">Worst</th></tr></thead><tbody>'
-            + _spread_row("UDP jitter", load.get("jitter_ms"), " ms")
-            + _spread_row("UDP packet loss", load.get("loss_pct"), "%")
-            + "</tbody></table>"
-            '<p class="sub">Measured with a constant UDP stream at the bitrate a '
+            '<p class="sub">Measured with constant UDP streams at the bitrates a '
             "teleoperation session uses, rather than on an idle link. Seconds "
             "with <em>no stream at all</em> are the severe case, not missing "
             "data: the link failed badly enough that the test itself could not "
-            "stay up.</p>")
+            "stay up.</p>" + "".join(sections))
     else:
         load_block = ""
 

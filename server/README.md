@@ -4,7 +4,7 @@ One small cloud box doing two jobs for the rigs:
 
 1. **Receiving finished surveys** and serving them as web pages
    (`viabot_receiver.py`).
-2. **Answering the UDP load test** during a walk (`iperf3`).
+2. **Answering the UDP load tests** during a walk (`iperf3`, two instances).
 
 They never compete: the load test runs *during* a survey and the upload runs
 *after*, because the rig refuses to upload over a link it is measuring.
@@ -174,12 +174,20 @@ printf '%s,%s\n' "$USER" \
 sudo chmod 600 /etc/viabot/iperf3_private.pem /etc/viabot/iperf3_users.csv
 sudo chown -R viabot:viabot /etc/viabot
 
-sudo cp server/viabot-iperf3.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now viabot-iperf3
+sudo cp server/viabot-iperf3@.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now viabot-iperf3@5201    # uplink
+sudo systemctl enable --now viabot-iperf3@5202    # downlink
 ```
 
-Open **TCP and UDP port 5201** in the provider's firewall. iperf3 negotiates
-over TCP and then sends the test traffic over UDP, so it needs both.
+**Two instances, on purpose.** One iperf3 server runs one test at a time — a
+second client is told "the server is busy" — and the rig measures both
+directions at once, because a teleop session is asymmetric and the two halves
+fail differently.
+
+Open **TCP and UDP ports 5201 and 5202** in the provider's firewall. iperf3
+negotiates over TCP and then sends the test traffic over UDP, so it needs
+both.
 
 Copy `/etc/viabot/iperf3_public.pem` to the rig — it is a public key, so email
 or a paste is fine — and put it somewhere like
@@ -189,11 +197,18 @@ or a paste is fine — and put it somewhere like
 udp_load:
   enabled: true
   server: "surveys.example.com"
-  bitrate: "1.5M"          # set this to what Formant teleop actually uses
   username: "viabot-rig"
   password: "<the password from above>"
   public_key_path: "/home/viabot/claude-code-viabot/config/iperf3_public.pem"
+  uplink_bitrate: "2M"      # what the robot sends: its video
+  downlink_bitrate: "300k"  # what the operator sends: commands
 ```
+
+Both bitrates come from one place — the operator's browser during a live
+session, at `chrome://webrtc-internals`. Scroll past the event list to the
+stats, and read `inbound-rtp (kind=video)` for what the robot sends up, and the
+outbound streams for what the operator sends down. The values shipped in the
+config are **placeholders**, not measurements.
 
 Check it works before relying on it:
 
@@ -201,15 +216,24 @@ Check it works before relying on it:
 sudo systemctl restart viabot-survey
 curl -s localhost/api/status | .venv/bin/python -c "
 import json, sys
-w = json.load(sys.stdin)['workers']['udp_load']
-print(w['state'], '| streaming:', w['streaming'], '| loss:', w['udp_loss_pct'],
-      '| jitter:', w['udp_jitter_ms'], 'ms | spent:', w['run_mb'], 'MB')"
+status = json.load(sys.stdin)['workers']
+for name in ('udp_up', 'udp_down'):
+    w = status[name]
+    print(name, w['state'], 'loss', w['loss_pct'], 'jitter', w['jitter_ms'],
+          'spent', w['run_mb'], 'MB', 'backfilled', w['backfilled_samples'])"
 ```
 
-> Leave `udp_load.enabled: false` until you have a number from Formant for what
-> a teleop session actually uses. Testing at the wrong bitrate measures a link
-> you will never ask for, and it is the single most expensive thing the rig does
-> on cellular data.
+Uplink readings only appear once a block finishes (30 s by default) and are
+then written onto the samples they cover, so `backfilled` climbing is what says
+it is working. Downlink readings appear within a second or two.
+
+> Both directions run **only during a walk**. Between runs they are stopped on
+> purpose: they are a deliberate load on the uplink and would otherwise compete
+> with the report upload.
+
+> Leave `udp_load.enabled: false` until you have read the real bitrates off a
+> live session. Testing at the wrong rate measures a link nobody will ever ask
+> for.
 
 ## Backups
 

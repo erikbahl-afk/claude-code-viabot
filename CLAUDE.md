@@ -54,10 +54,20 @@ for nothing and competes with the publisher sending the last run's clips, and
 left running through a pause it contradicts what Pause means. The runner starts
 and stops it alongside the camera, for the same reasons.
 
-**`udp_load.bitrate` is a placeholder, not a measurement.** The point of that
-test is to load the link the way a real Formant teleop session does; at the
-wrong rate it measures a link nobody will ask for. 1.5M is a guess pending a
-real number from Formant. Do not let it harden into a requirement.
+**`udp_load` bitrates are placeholders, not measurements.** The point of that
+test is to load the link the way a real Formant session does; at the wrong rate
+it measures a link nobody will ask for. `uplink_bitrate: 2M` and
+`downlink_bitrate: 300k` are guesses pending real figures read off a live
+session in `chrome://webrtc-internals`. Do not let them harden into
+requirements.
+
+**Uplink is the half that matters most, and it cannot be measured at the rig.**
+The robot *sends* video, so the heavy stream leaves the garage — and cellular
+uplink is the weaker direction, so measuring only downlink flatters every
+garage. iperf3 reports jitter and loss only at the receiving end, which for
+uplink is the server: hence blocks, `--get-server-output`, and
+`storage.backfill_samples` writing the readings onto the seconds they cover
+afterwards. Do not "simplify" that into a live reading; there isn't one.
 
 **`udp_load.datagram_bytes` must stay at 1200.** iperf3 defaults to 32 KB UDP
 datagrams, which IP fragments into two dozen packets — lose any one and the
@@ -126,7 +136,7 @@ indoor positioning. Do not make Pause merely cosmetic.
 | `viabot_survey/app.py` | Flask: captive portal, API, report building |
 | `viabot_survey/workers/` | One file per measurement source, all subclass `base.Worker` |
 | `viabot_survey/report.py` | Builds a run's result and renders it as the published page |
-| `viabot_survey/workers/udpload.py` | Jitter and loss under a teleop-sized UDP stream — the load case ping cannot see |
+| `viabot_survey/workers/udpload.py` | Jitter and loss under teleop-sized UDP streams, both directions — the load case ping cannot see |
 | `viabot_survey/publish.py` | Resumable upload client; the receiver's byte count is the authority |
 | `viabot_survey/storage.py` | SQLite; add columns to `SAMPLE_COLUMNS` when extending `samples` |
 | `server/viabot_receiver.py` | The cloud side: accepts uploads, serves reports. Deployed separately, not on the rig |
@@ -141,7 +151,7 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 198 tests, no camera or rig needed
+.venv/bin/python -m pytest        # 207 tests, no camera or rig needed
 ```
 
 Most of the suite runs anywhere: workers are tested through their parsing and
@@ -181,8 +191,9 @@ Specifically open:
 - The Dallas server does not exist yet. `server/README.md` has the whole
   recipe: it hosts both the report receiver and the authenticated iperf3
   server, on Vultr or Linode (bundled transfer, not per-GB egress).
-- What bitrate a real Formant teleop session uses. Until that is known the UDP
-  load test has no meaningful setting and stays off.
+- What bitrates a real Formant session uses, each way. Until those are known
+  the UDP load test has no meaningful setting and stays off. Read them in the
+  operator's browser at `chrome://webrtc-internals`.
 - Whether the closed Apache 2800 case overheats. An hour on the bench checking
   `vcgencmd measure_temp` answers it; nobody has run it.
 - Dead-zone thresholds are invented — `deadzone.provisional: true` (80% loss or

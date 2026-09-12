@@ -60,11 +60,16 @@ CREATE TABLE IF NOT EXISTS samples (
     band            TEXT,
     cell_id         TEXT,
     tech            TEXT,
-    -- Jitter and loss measured under a real teleop-sized UDP load, as
-    -- opposed to jitter_ms above, which ping sees on an idle link.
-    udp_jitter_ms   REAL,
-    udp_loss_pct    REAL,
-    udp_mbps        REAL,
+    -- Jitter and loss under a real teleop-sized UDP load, as opposed to
+    -- jitter_ms above, which ping sees on an idle link. Split by direction
+    -- because a teleop session is asymmetric: uplink carries the robot's
+    -- video and is usually the weaker half, downlink carries the commands.
+    udp_up_jitter_ms   REAL,
+    udp_up_loss_pct    REAL,
+    udp_up_mbps        REAL,
+    udp_down_jitter_ms REAL,
+    udp_down_loss_pct  REAL,
+    udp_down_mbps      REAL,
     video_file      TEXT,
     video_offset_s  REAL,
     clock_synced    INTEGER,
@@ -146,7 +151,8 @@ CREATE INDEX IF NOT EXISTS idx_uploads_state ON uploads(state, id);
 SAMPLE_COLUMNS = (
     "rtt_ms", "loss_pct", "jitter_ms", "status", "dns_ms",
     "rsrp", "rsrq", "sinr", "rssi", "band", "cell_id", "tech",
-    "udp_jitter_ms", "udp_loss_pct", "udp_mbps",
+    "udp_up_jitter_ms", "udp_up_loss_pct", "udp_up_mbps",
+    "udp_down_jitter_ms", "udp_down_loss_pct", "udp_down_mbps",
     "video_file", "video_offset_s", "clock_synced", "undervoltage",
 )
 
@@ -156,9 +162,12 @@ SAMPLE_COLUMNS = (
 #: this. Adding an entry here is all that is needed; SQLite fills old rows with
 #: NULL, which is the honest value for a measurement nobody took.
 ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
-    ("samples", "udp_jitter_ms", "REAL"),
-    ("samples", "udp_loss_pct", "REAL"),
-    ("samples", "udp_mbps", "REAL"),
+    ("samples", "udp_up_jitter_ms", "REAL"),
+    ("samples", "udp_up_loss_pct", "REAL"),
+    ("samples", "udp_up_mbps", "REAL"),
+    ("samples", "udp_down_jitter_ms", "REAL"),
+    ("samples", "udp_down_loss_pct", "REAL"),
+    ("samples", "udp_down_mbps", "REAL"),
 )
 
 
@@ -392,6 +401,39 @@ class Storage:
             f"INSERT OR REPLACE INTO samples({', '.join(columns)}) VALUES({placeholders})",
             (run_id, ts, *fields.values()),
         )
+
+    def backfill_samples(self, run_id: str,
+                         readings: Iterable[tuple[float, dict[str, Any]]],
+                         tolerance_s: float = 1.5) -> int:
+        """Write measurements onto samples that were already recorded.
+
+        Uplink jitter and loss can only be measured at the far end of the link,
+        and come back in a batch when a test block finishes — seconds after the
+        samples they describe were written. This puts each reading on the
+        sample it belongs to.
+
+        A reading with no sample within ``tolerance_s`` is dropped rather than
+        attached to the nearest thing available. The gap is usually a pause, and
+        paused seconds are meant to leave no trace; smearing a measurement
+        across one would put data where the report says nothing happened.
+        """
+        written = 0
+        for ts, fields in readings:
+            unknown = set(fields) - set(SAMPLE_COLUMNS)
+            if unknown:
+                raise ValueError(f"unknown sample columns: {sorted(unknown)}")
+            row = self.connection().execute(
+                """SELECT ts FROM samples
+                   WHERE run_id = ? AND ts BETWEEN ? AND ?
+                   ORDER BY ABS(ts - ?) LIMIT 1""",
+                (run_id, ts - tolerance_s, ts + tolerance_s, ts)).fetchone()
+            if row is None:
+                continue
+            assignments = ", ".join(f"{name} = ?" for name in fields)
+            self._write(f"UPDATE samples SET {assignments} WHERE run_id = ? AND ts = ?",
+                        (*fields.values(), run_id, row["ts"]))
+            written += 1
+        return written
 
     def recent_samples(self, run_id: str, seconds: float, now: float | None = None) -> list[dict]:
         cutoff = (time.time() if now is None else now) - seconds

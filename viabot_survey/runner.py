@@ -23,7 +23,7 @@ from .router_client import build_client
 from .storage import Storage
 from .workers import CameraWorker, DnsWorker, Iperf3Worker, PingWorker, RouterWorker
 from .workers.publisher import PublisherWorker
-from .workers.udpload import UdpLoadWorker
+from .workers.udpload import DOWNLINK, UPLINK, UdpLoadWorker
 
 log = logging.getLogger(__name__)
 
@@ -120,19 +120,39 @@ class SurveyRunner:
             interval_s=config["router"]["interval_s"],
             on_event=self._worker_event("router"),
         )
-        self.udp_load = UdpLoadWorker(
-            server=config["udp_load"]["server"],
-            port=config["udp_load"]["port"],
-            bitrate=config["udp_load"]["bitrate"],
-            datagram_bytes=config["udp_load"]["datagram_bytes"],
-            direction=config["udp_load"]["direction"],
-            run_data_budget_mb=config["udp_load"]["run_data_budget_mb"],
-            username=config["udp_load"]["username"],
-            password=config["udp_load"]["password"],
-            public_key_path=config["udp_load"]["public_key_path"],
-            enabled=config["udp_load"]["enabled"],
-            on_event=self._worker_event("udp_load"),
+        # A teleop session is asymmetric, so it takes two of these. Uplink
+        # carries the robot's video and is usually the weaker half; downlink
+        # carries the operator's commands and is small but not optional.
+        load = config["udp_load"]
+        common = dict(
+            server=load["server"],
+            datagram_bytes=load["datagram_bytes"],
+            run_data_budget_mb=load["run_data_budget_mb"],
+            username=load["username"],
+            password=load["password"],
+            public_key_path=load["public_key_path"],
         )
+        self.udp_up = UdpLoadWorker(
+            direction=UPLINK,
+            port=load["uplink_port"],
+            bitrate=load["uplink_bitrate"],
+            block_s=load["uplink_block_s"],
+            # Uplink loss can only be seen at the far end, so it arrives after
+            # the samples it describes were written.
+            on_backfill=self._backfill_uplink,
+            enabled=bool(load["enabled"]) and bool(load["uplink_enabled"]),
+            on_event=self._worker_event("udp_up"),
+            **common,
+        )
+        self.udp_down = UdpLoadWorker(
+            direction=DOWNLINK,
+            port=load["downlink_port"],
+            bitrate=load["downlink_bitrate"],
+            enabled=bool(load["enabled"]) and bool(load["downlink_enabled"]),
+            on_event=self._worker_event("udp_down"),
+            **common,
+        )
+        self.udp_load = [self.udp_up, self.udp_down]
         self.camera = CameraWorker(
             device=config["camera"]["device"],
             width=config["camera"]["width"],
@@ -164,7 +184,7 @@ class SurveyRunner:
             on_event=self._worker_event("publisher"),
         )
         self.workers = [self.ping, self.dns, self.iperf, self.router,
-                        self.udp_load, self.camera, self.publisher]
+                        *self.udp_load, self.camera, self.publisher]
 
     # -- events --------------------------------------------------------------
 
@@ -196,7 +216,7 @@ class SurveyRunner:
         """Start the always-on workers and the sampling loop."""
         self._stop.clear()
         for worker in self.workers:
-            if worker in (self.camera, self.udp_load):
+            if worker is self.camera or worker in self.udp_load:
                 # Both only run during a walk. The camera for the obvious
                 # reason; the UDP load test because it is a deliberate,
                 # continuous load on the uplink — left running between walks it
@@ -306,9 +326,10 @@ class SurveyRunner:
             # A fresh walk gets a fresh data allowance. The UDP load test is by
             # far the most expensive thing the rig does on cellular, so its
             # ceiling is per-run rather than per-lifetime.
-            self.udp_load.begin_run()
-            if self.udp_load.enabled:
-                self.udp_load.start()
+            for worker in self.udp_load:
+                worker.begin_run()
+                if worker.enabled:
+                    worker.start()
             if self.camera.enabled:
                 self.camera.set_output_dir(video_dir)
                 self.camera.start()
@@ -327,7 +348,8 @@ class SurveyRunner:
 
         segments = self.camera.segments()
         self.camera.stop()
-        self.udp_load.stop()
+        for worker in self.udp_load:
+            worker.stop()
         self.camera.output_dir = None
         self.storage.end_run(run["id"])
         self.storage.add_event(f"run {run['id']} stopped", source="runner",
@@ -506,7 +528,8 @@ class SurveyRunner:
         # recording. Leaving it streaming would also spend the uplink while
         # the operator is standing still, which is exactly the time it tells
         # you nothing about.
-        self.udp_load.stop()
+        for worker in self.udp_load:
+            worker.stop()
         self._dead_streak_s = 0.0
         self.storage.add_event("run paused", source="runner", run_id=run_id)
         return True
@@ -523,8 +546,9 @@ class SurveyRunner:
             # clock, so correlation still holds across the gap.
             self.camera.set_output_dir(video_dir)
             self.camera.start()
-        if self.udp_load.enabled:
-            self.udp_load.start()
+        for worker in self.udp_load:
+            if worker.enabled:
+                worker.start()
         self.storage.add_event("run resumed", source="runner", run_id=run_id)
         return True
 
@@ -563,7 +587,10 @@ class SurveyRunner:
         status = classify(loss, rtt, self.config["thresholds"], self._dead_streak_s)
         dns = self.dns.snapshot() if self.dns.enabled else {}
         signal = self.router.sample_fields() if self.router.enabled else {}
-        under_load = self.udp_load.sample_fields() if self.udp_load.enabled else {}
+        under_load: dict[str, Any] = {}
+        for worker in self.udp_load:
+            if worker.enabled:
+                under_load.update(worker.sample_fields())
         undervoltage = self._check_power()
 
         sample: dict[str, Any] = {
@@ -595,6 +622,23 @@ class SurveyRunner:
                 undervoltage=undervoltage,
                 **signal, **under_load)
         return sample
+
+    def _backfill_uplink(self, readings: list) -> None:
+        """Write a finished uplink block onto the samples it covers.
+
+        Only into the run that was walking while the block ran. If the run
+        ended or was paused while it was in flight, the readings describe time
+        the report says did not happen, and are dropped.
+        """
+        with self._lock:
+            run = self._run
+            paused = self._paused
+        if not run or paused:
+            return
+        try:
+            self.storage.backfill_samples(run["id"], readings)
+        except Exception:  # noqa: BLE001 - a late measurement must never
+            log.exception("could not backfill uplink readings")   # kill a run
 
     def _track_dead_zone(self, sample: dict) -> None:
         """Count dead zones as they happen, using the same rule as the report."""
