@@ -166,13 +166,15 @@ class PublishClient:
                       data=json.dumps(manifest).encode(),
                       headers={"Content-Type": "application/json"})
 
-    def requests_for(self, run_id: str) -> dict[str, Any]:
-        """Anything a reader asked for from the report page.
+    def pending_requests(self) -> dict[str, Any]:
+        """Everything anyone has asked for, across every run, in one call.
 
         The rig sits behind carrier NAT with no inbound route, so nobody can
-        push a request to it. It asks — cheaply, and only while idle.
+        push a request to it; it has to ask. Asking once for everything rather
+        than once per run keeps that cost flat as the number of past surveys
+        grows.
         """
-        status, _, body = self._request("GET", f"{API}/runs/{run_id}/requests")
+        status, _, body = self._request("GET", f"{API}/requests")
         if status == 404:
             return {}
         try:

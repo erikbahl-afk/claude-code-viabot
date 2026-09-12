@@ -335,3 +335,54 @@ def test_a_run_that_has_not_finished_uploading_says_so(published):
     published.write_meta("run-3", {"label": "Level 3", "share_key": "k3"})
     (published.DATA_DIR / "runs" / "run-3").mkdir(parents=True, exist_ok=True)
     assert _get(f"{published.base_url}/r/run-3/?k=k3") == 202
+
+
+# ---- things found by auditing the whole thing ------------------------------
+
+def test_one_call_asks_about_every_run(receiver, tmp_path):
+    """The rig keeps a held video for every survey it has ever done. Asking per
+    run meant a steady stream of questions about walks nobody will look at
+    again, growing for as long as the rig is in service."""
+    for run_id, wanted in (("run-1", True), ("run-2", False), ("run-3", True)):
+        (receiver.DATA_DIR / "runs" / run_id).mkdir(parents=True, exist_ok=True)
+        receiver.write_meta(run_id, {"requests": {"full_video": wanted}})
+
+    client = PublishClient(receiver.base_url, TOKEN)
+    assert set(client.pending_requests()) == {"run-1", "run-3"}
+
+
+def test_two_chunks_arriving_together_cannot_corrupt_a_file(receiver, tmp_path):
+    """A retry over a flaky link can land while the original is still in
+    flight. Both would read the same offset, both pass the check, and both
+    append — producing a longer, broken file that still looks finished."""
+    import threading
+
+    source = _file(tmp_path / "clip.mp4", 160_000)
+    payload = source.read_bytes()[:32 * 1024]
+    total = source.stat().st_size
+
+    def send():
+        client = PublishClient(receiver.base_url, TOKEN)
+        try:
+            client.send_chunk("run-1", "clips/clip.mp4", 0, total, payload)
+        except Exception:            # one of them must lose, which is correct
+            pass
+
+    threads = [threading.Thread(target=send) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+
+    part = _stored(receiver, "run-1", "clips/clip.mp4.part")
+    assert part.stat().st_size == len(payload), "a duplicate chunk was appended"
+
+
+def test_the_receiver_refuses_to_serve_surveys_with_no_password(receiver, monkeypatch):
+    """Run ids contain the site name and the date, so they are guessable, and
+    the contents name a customer's site. Starting wide open should take a
+    deliberate act, not an unread warning in a startup log."""
+    monkeypatch.setattr(receiver, "VIEWER_PASSWORD", "")
+    monkeypatch.delenv("VIABOT_RECEIVER_ALLOW_PUBLIC", raising=False)
+    monkeypatch.setattr("sys.argv", ["viabot_receiver.py"])
+    assert receiver.main() == 2

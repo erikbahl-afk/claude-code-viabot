@@ -21,6 +21,7 @@ from .config import Config, redact
 from .publish import PublishClient
 from .router_client import build_client
 from .storage import Storage
+from .workers import camera as camera_worker
 from .workers import CameraWorker, DnsWorker, Iperf3Worker, PingWorker, RouterWorker
 from .workers.publisher import PublisherWorker
 from .workers.udpload import DOWNLINK, UPLINK, UdpLoadWorker
@@ -485,6 +486,19 @@ class SurveyRunner:
             raise FileNotFoundError(f"no video segments for {run_id}")
         out_path = Path(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Joining the segments writes a second copy of the entire walk. The
+        # camera refuses to record below a disk floor, but this path would walk
+        # straight past it and fill the card — and the first thing that breaks
+        # then is recording the *next* survey.
+        needed_mb = sum((video_dir / name).stat().st_size
+                        for name, _ in segments) / 1024 ** 2
+        floor_mb = float(self.config["camera"]["min_free_disk_mb"])
+        free_mb = camera_worker.free_disk_mb(out_path.parent)
+        if free_mb < needed_mb + floor_mb:
+            raise RuntimeError(
+                f"not enough disk to join this walk: it needs {needed_mb:.0f} MB "
+                f"plus a {floor_mb:.0f} MB floor, and {free_mb:.0f} MB is free")
         listing = out_path.with_suffix(".txt")
         listing.write_text("".join(
             f"file '{(video_dir / name).resolve()}'\n" for name, _ in segments))

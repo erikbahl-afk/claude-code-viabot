@@ -75,7 +75,10 @@ dns:
 iperf3:
   enabled: false
   server: null
-  port: 5201
+  # Its own port, deliberately not 5201 or 5202: one iperf3 server runs one
+  # test at a time, so sharing a port with udp_load means whichever starts
+  # second is told "the server is busy" and measures nothing.
+  port: 5203
   # Seconds per test.
   duration_s: 5
   # Seconds between tests.

@@ -157,15 +157,21 @@ class PublisherWorker(Worker):
         self._manifested.add(run_id)
 
     def collect_requests(self) -> None:
-        """Ask the receiver whether anyone pressed 'request the full video'."""
-        for run_id in self.storage.runs_with_held_uploads():
-            if self.stopping or self.busy():
-                return
-            wanted = self.client.requests_for(run_id)
-            if wanted.get("full_video"):
-                released = self.storage.release_held_uploads(run_id, "video")
-                if released:
-                    self.emit("info", f"full video requested for {run_id}")
+        """Ask once whether anyone pressed 'request the full video'.
+
+        One call for every run, not one per run: the rig keeps a held video for
+        every survey it has ever done, and asking about each of them on every
+        cycle would grow into a steady stream of questions about walks nobody
+        will ever look at again.
+        """
+        held = set(self.storage.runs_with_held_uploads())
+        if not held:
+            return
+        for run_id, wanted in self.client.pending_requests().items():
+            if run_id not in held or not wanted.get("full_video"):
+                continue
+            if self.storage.release_held_uploads(run_id, "video"):
+                self.emit("info", f"full video requested for {run_id}")
 
     # -- reporting -----------------------------------------------------------
 

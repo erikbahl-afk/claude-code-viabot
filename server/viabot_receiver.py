@@ -28,7 +28,9 @@ import json
 import os
 import re
 import secrets
+import threading
 import time
+from collections import defaultdict
 from pathlib import Path
 
 from flask import (Flask, Response, abort, jsonify, redirect, request,
@@ -52,6 +54,17 @@ MAX_FILE_BYTES = int(os.environ.get("VIABOT_RECEIVER_MAX_BYTES", 8 * 1024 ** 3))
 SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$")
 
 app = Flask(__name__)
+
+#: One lock per file being received. Two chunks arriving together would
+#: otherwise both read the same offset, both pass the check, and both append —
+#: which is how a retry over a flaky link turns into a longer, broken file.
+_file_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
+_locks_guard = threading.Lock()
+
+
+def file_lock(key: str) -> threading.Lock:
+    with _locks_guard:
+        return _file_locks[key]
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +196,11 @@ def file_append(run_id: str, name: str):
     target = run_dir(run_id, create=True) / relative
     target.parent.mkdir(parents=True, exist_ok=True)
 
+    with file_lock(f"{run_id}/{relative}"):
+        return _append_chunk(target)
+
+
+def _append_chunk(target: Path):
     offset, complete = current_offset(target)
     if complete:
         return Response(status=200, headers={"Upload-Offset": str(offset),
@@ -249,6 +267,27 @@ def put_manifest(run_id: str):
     meta["updated"] = time.time()
     write_meta(run_id, meta)
     return jsonify({"ok": True, "share_key": meta["share_key"]})
+
+
+@app.route("/api/v1/requests")
+def all_requests():
+    """Everything anyone has asked for, across every run, in one answer.
+
+    The rig used to ask per run, which meant one HTTP request per survey it
+    still held a video for, every polling cycle, forever. After a few months of
+    walks that is a steady stream of requests about runs nobody will ever ask
+    about again.
+    """
+    out = {}
+    root = DATA_DIR / "runs"
+    if root.is_dir():
+        for path in root.iterdir():
+            if not path.is_dir():
+                continue
+            wanted = read_meta(path.name).get("requests") or {}
+            if any(v for k, v in wanted.items() if k != "asked_at"):
+                out[path.name] = wanted
+    return jsonify(out)
 
 
 @app.route("/api/v1/runs/<run_id>/requests")
@@ -410,9 +449,15 @@ def main() -> int:
     if not UPLOAD_TOKEN:
         print("refusing to start: set VIABOT_RECEIVER_TOKEN", flush=True)
         return 2
-    if not VIEWER_PASSWORD:
-        print("warning: VIABOT_RECEIVER_VIEWER_PASSWORD is unset — reports are "
-              "readable by anyone who can reach this service", flush=True)
+    if not VIEWER_PASSWORD and not os.environ.get("VIABOT_RECEIVER_ALLOW_PUBLIC"):
+        # Reports name a customer's site and a run id is guessable by design, so
+        # "nobody will find it" is not access control. Refusing is louder than a
+        # warning nobody reads in a unit's startup log.
+        print("refusing to start: VIABOT_RECEIVER_VIEWER_PASSWORD is unset, so "
+              "every survey would be readable by anyone who can reach this "
+              "service. Set it, or set VIABOT_RECEIVER_ALLOW_PUBLIC=1 if that "
+              "is genuinely what you want.", flush=True)
+        return 2
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     try:
