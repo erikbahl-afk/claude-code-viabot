@@ -27,6 +27,7 @@ only*. Nothing else in this project skips verification.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -37,6 +38,8 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 # Keys we try to recognise in whatever shape the firmware returns. Values are
 # the canonical field name used everywhere else in the app.
@@ -120,9 +123,17 @@ class RouterClient:
 
 
 class NullRouterClient(RouterClient):
-    """Collects nothing. The safe default until the router API is known."""
+    """Collects nothing. The safe default, and the fallback for a bad config.
+
+    ``reason`` says why, when it is standing in for a client that could not be
+    built. It reaches the worker status and so the API, which is the only place
+    a misconfiguration would otherwise be visible at all.
+    """
 
     name = "null"
+
+    def __init__(self, reason: str | None = None) -> None:
+        self.reason = reason
 
     def fetch(self) -> dict[str, Any]:
         return {}
@@ -572,8 +583,21 @@ class AtOverSshRouterClient(RouterClient):
             reader.join(timeout=2)
 
 
-def build_client(config: dict, router_address: str) -> RouterClient:
-    """Construct the client named by ``router.client`` in the config."""
+def build_client(config: dict, router_address: str,
+                 strict: bool = False) -> RouterClient:
+    """Construct the client named by ``router.client`` in the config.
+
+    A name we do not recognise falls back to collecting nothing rather than
+    raising. Signal metrics are an optional extra — the rig finds dead zones
+    from ping loss and latency with or without them — and a typo in this one
+    key used to crash the service on startup, which took the whole rig down and
+    with it the dashboard that is how an update gets applied. Being unable to
+    fix a typo without a keyboard and an SSH session is a far worse failure than
+    walking a garage with no RSRP.
+
+    Pass ``strict`` where a human is waiting on the answer, as the probe script
+    and the tests do, so a typo is reported rather than quietly tolerated.
+    """
     kind = str(config.get("client", "null")).lower()
     if kind in ("null", "none", "off", ""):
         return NullRouterClient()
@@ -598,5 +622,8 @@ def build_client(config: dict, router_address: str) -> RouterClient:
             interval_s=float(config.get("interval_s", 2) or 2),
             **common,
         )
-    raise ValueError(
-        f"unknown router client {kind!r} (expected null, at_ssh, ubus or luci)")
+    message = f"unknown router client {kind!r} (expected null, at_ssh, ubus or luci)"
+    if strict:
+        raise ValueError(message)
+    log.warning("%s - collecting no signal metrics", message)
+    return NullRouterClient(reason=message)
