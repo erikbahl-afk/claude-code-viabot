@@ -131,13 +131,22 @@ class Worker:
                 log.exception("event callback failed for %s", self.name)
 
     def status(self) -> dict[str, Any]:
+        """Worker health, plus whatever the subclass wants to report.
+
+        The health fields are written last and win. A snapshot is partly
+        built from data the worker did not author — the router's, for one,
+        comes out of a modem — and a reading that happened to carry a key
+        called "state" once replaced this worker's health with the modem's
+        idea of its own connection. Everything downstream reads these five
+        names to decide whether the rig is working.
+        """
         return {
+            **self.snapshot(),
             "name": self.name,
             "enabled": self.enabled,
             "state": self.state,
             "error": self.error,
             "restarts": self.restarts,
-            **self.snapshot(),
         }
 
 

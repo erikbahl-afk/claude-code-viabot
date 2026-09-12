@@ -280,3 +280,34 @@ def test_a_refused_login_is_not_retried_every_poll():
     client._last_start = time.monotonic()
     with pytest.raises(RuntimeError, match="reconnect"):
         client.fetch()
+
+
+def test_the_modems_connection_state_is_not_the_workers_health():
+    """A reading carrying a key called "state" once replaced the worker's
+    health with the modem's idea of its own connection, so /api/status reported
+    a healthy worker as "NOCONN". Everything downstream reads that field to
+    decide whether the rig is working."""
+    from viabot_survey.workers.router import RouterWorker
+
+    assert parse_qeng(REAL_QENG)["modem_state"] == "NOCONN"
+
+    worker = RouterWorker(client=NullRouterClient(), enabled=False)
+    worker._latest = parse_qeng(REAL_QENG)
+    status = worker.status()
+    assert status["state"] == worker.state
+    assert status["state"] != "NOCONN"
+    assert status["modem_state"] == "NOCONN"     # still reported, just not there
+
+
+def test_a_snapshot_can_never_overwrite_the_health_fields():
+    """The general form of the same bug: a client returns whatever the hardware
+    gave it, and that must not be able to impersonate worker health."""
+    from viabot_survey.workers.router import RouterWorker
+
+    worker = RouterWorker(client=NullRouterClient(), enabled=False)
+    worker._latest = {"name": "x", "enabled": "x", "state": "x",
+                      "error": "x", "restarts": "x"}
+    status = worker.status()
+    assert status["name"] == "router"
+    assert status["enabled"] is False
+    assert status["restarts"] == 0
