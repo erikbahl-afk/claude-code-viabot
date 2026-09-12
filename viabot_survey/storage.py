@@ -60,6 +60,11 @@ CREATE TABLE IF NOT EXISTS samples (
     band            TEXT,
     cell_id         TEXT,
     tech            TEXT,
+    -- Jitter and loss measured under a real teleop-sized UDP load, as
+    -- opposed to jitter_ms above, which ping sees on an idle link.
+    udp_jitter_ms   REAL,
+    udp_loss_pct    REAL,
+    udp_mbps        REAL,
     video_file      TEXT,
     video_offset_s  REAL,
     clock_synced    INTEGER,
@@ -141,7 +146,19 @@ CREATE INDEX IF NOT EXISTS idx_uploads_state ON uploads(state, id);
 SAMPLE_COLUMNS = (
     "rtt_ms", "loss_pct", "jitter_ms", "status", "dns_ms",
     "rsrp", "rsrq", "sinr", "rssi", "band", "cell_id", "tech",
+    "udp_jitter_ms", "udp_loss_pct", "udp_mbps",
     "video_file", "video_offset_s", "clock_synced", "undervoltage",
+)
+
+#: Columns added to existing databases after the fact. CREATE TABLE IF NOT
+#: EXISTS does nothing to a table that already exists, so a rig that has been
+#: running since before a column was added would fail every insert without
+#: this. Adding an entry here is all that is needed; SQLite fills old rows with
+#: NULL, which is the honest value for a measurement nobody took.
+ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("samples", "udp_jitter_ms", "REAL"),
+    ("samples", "udp_loss_pct", "REAL"),
+    ("samples", "udp_mbps", "REAL"),
 )
 
 
@@ -160,10 +177,30 @@ class Storage:
         self._write_lock = threading.Lock()
         with self.connection() as conn:
             conn.executescript(SCHEMA)
+            self._add_missing_columns(conn)
             conn.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
             )
+
+    @staticmethod
+    def _add_missing_columns(conn: sqlite3.Connection) -> list[str]:
+        """Bring an older database up to the current shape.
+
+        The rig updates by pulling code onto a card that already holds months
+        of surveys; dropping and recreating a table would throw away the very
+        thing the rig exists to collect. Each column is added on its own and
+        missing ones are the only thing touched, so this is safe to run on
+        every startup and safe to run twice.
+        """
+        added = []
+        for table, column, kind in ADDED_COLUMNS:
+            existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if column in existing:
+                continue
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+            added.append(f"{table}.{column}")
+        return added
 
     # -- connection handling -------------------------------------------------
 

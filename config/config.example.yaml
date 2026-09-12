@@ -89,18 +89,66 @@ iperf3:
   # Hard ceiling on cellular data per run. The worker stops launching tests
   # once a run has used this much. null = no limit.
   run_data_budget_mb: 2000
+  # Same server and the same credentials as udp_load, if both are in use.
+  username: ""
+  password: ""
+  public_key_path: ""
 
 # ----------------------------------------------------------------------------
-# Router / modem signal statistics (RSRP, RSRQ, SINR, band, cell ID).
+# Continuous UDP load — jitter and packet loss under a real teleop stream.
 #
-# This is the highest-value coverage data and costs zero cellular data, but the
-# rig's router runs custom ViaBot OpenWrt firmware whose API has not been
-# characterised yet. Run `python3 scripts/probe_router.py` on the Pi to discover
-# which endpoint works, then set `client` accordingly.
+# Everything else here measures an idle link. Ping sends 60 bytes a second and
+# finds a garage where nothing gets through; it does not find the more
+# interesting failure, which is a spot that looks fine empty and falls apart the
+# moment you put video on it. Carriers shape UDP differently from TCP and drop
+# it first under contention, so a link that passes a TCP speed test can still be
+# useless for teleoperation.
 #
-# client: "null"  — collect nothing (default, always safe)
-#         "ubus"  — OpenWrt ubus JSON-RPC over http://<router>/ubus
-#         "luci"  — legacy LuCI RPC at /cgi-bin/luci/rpc/sys
+# This holds one UDP stream open for the whole walk and records what the
+# receiving end sees every second, which is the same question the remote
+# operator is asking, asked at every point in the garage.
+#
+# THIS IS THE MOST EXPENSIVE THING THE RIG DOES. The bill is simply bitrate
+# times the length of the walk: at 1.5 Mbit/s a 30-minute walk spends about
+# 340 MB of cellular data. Nothing else comes close. It ships disabled, and the
+# per-run ceiling below is a hard stop rather than a guideline.
+#
+# Needs an iperf3 server — see server/README.md, which runs one alongside the
+# report receiver on the same box.
+# ----------------------------------------------------------------------------
+udp_load:
+  enabled: false
+  server: null
+  port: 5201
+
+  # Match this to what a real Formant teleop session actually uses. It is the
+  # number that decides what the test means: measuring at 25M tells you about a
+  # link you will never ask for, and a garage could fail that while carrying
+  # teleop perfectly. 1.5M is a placeholder, NOT a measured figure.
+  bitrate: 1.5M
+
+  # Bytes per datagram. Do not raise this. iperf3 defaults to 32 KB datagrams,
+  # which IP then fragments into two dozen packets — lose any one and the whole
+  # datagram counts lost, so loss reads several times worse than a real
+  # 1200-byte video packet would see. 1200 is what WebRTC settles on.
+  datagram_bytes: 1200
+
+  # "download" runs the stream server -> rig, the direction video travels and
+  # the only direction that reports jitter and loss at the rig's end.
+  direction: download
+
+  # Hard ceiling on cellular data per run. The stream stops when it is reached
+  # and the walk carries on without it. null = no limit, which on an unknown
+  # SIM plan is a way to find out what the plan was the expensive way.
+  run_data_budget_mb: 500
+
+  # iperf3's own authentication. Leave blank only for a server that cannot be
+  # reached from the internet — an open one is a bandwidth allowance anyone who
+  # finds the port can spend. server/README.md generates these.
+  username: ""
+  password: ""
+  public_key_path: ""
+
 # ----------------------------------------------------------------------------
 # ----------------------------------------------------------------------------
 # Modem signal metrics: RSRP, RSRQ, SINR, band and cell ID on every sample.

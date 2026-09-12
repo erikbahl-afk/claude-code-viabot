@@ -23,6 +23,7 @@ from .router_client import build_client
 from .storage import Storage
 from .workers import CameraWorker, DnsWorker, Iperf3Worker, PingWorker, RouterWorker
 from .workers.publisher import PublisherWorker
+from .workers.udpload import UdpLoadWorker
 
 log = logging.getLogger(__name__)
 
@@ -107,6 +108,9 @@ class SurveyRunner:
             direction=config["iperf3"]["direction"],
             streams=config["iperf3"]["streams"],
             run_data_budget_mb=config["iperf3"]["run_data_budget_mb"],
+            username=config["iperf3"]["username"],
+            password=config["iperf3"]["password"],
+            public_key_path=config["iperf3"]["public_key_path"],
             enabled=config["iperf3"]["enabled"],
             on_result=self._on_throughput,
             on_event=self._worker_event("iperf3"),
@@ -115,6 +119,19 @@ class SurveyRunner:
             client=build_client(config["router"], uplink["router_address"]),
             interval_s=config["router"]["interval_s"],
             on_event=self._worker_event("router"),
+        )
+        self.udp_load = UdpLoadWorker(
+            server=config["udp_load"]["server"],
+            port=config["udp_load"]["port"],
+            bitrate=config["udp_load"]["bitrate"],
+            datagram_bytes=config["udp_load"]["datagram_bytes"],
+            direction=config["udp_load"]["direction"],
+            run_data_budget_mb=config["udp_load"]["run_data_budget_mb"],
+            username=config["udp_load"]["username"],
+            password=config["udp_load"]["password"],
+            public_key_path=config["udp_load"]["public_key_path"],
+            enabled=config["udp_load"]["enabled"],
+            on_event=self._worker_event("udp_load"),
         )
         self.camera = CameraWorker(
             device=config["camera"]["device"],
@@ -146,8 +163,8 @@ class SurveyRunner:
             enabled=bool(publish["enabled"]) and bool(publish["url"]),
             on_event=self._worker_event("publisher"),
         )
-        self.workers = [self.ping, self.dns, self.iperf, self.router, self.camera,
-                        self.publisher]
+        self.workers = [self.ping, self.dns, self.iperf, self.router,
+                        self.udp_load, self.camera, self.publisher]
 
     # -- events --------------------------------------------------------------
 
@@ -281,6 +298,10 @@ class SurveyRunner:
                     "may be off", level="warning", source="runner", run_id=run_id)
 
             self.iperf.reset_run_budget()
+            # A fresh walk gets a fresh data allowance. The UDP load test is by
+            # far the most expensive thing the rig does on cellular, so its
+            # ceiling is per-run rather than per-lifetime.
+            self.udp_load.begin_run()
             if self.camera.enabled:
                 self.camera.set_output_dir(video_dir)
                 self.camera.start()
@@ -527,6 +548,7 @@ class SurveyRunner:
         status = classify(loss, rtt, self.config["thresholds"], self._dead_streak_s)
         dns = self.dns.snapshot() if self.dns.enabled else {}
         signal = self.router.sample_fields() if self.router.enabled else {}
+        under_load = self.udp_load.sample_fields() if self.udp_load.enabled else {}
         undervoltage = self._check_power()
 
         sample: dict[str, Any] = {
@@ -539,6 +561,7 @@ class SurveyRunner:
             "dead_streak_s": round(self._dead_streak_s, 1),
             "undervoltage": undervoltage,
             **signal,
+            **under_load,
         }
         self._last_sample = sample
 
@@ -555,7 +578,7 @@ class SurveyRunner:
                 video_file=video_file, video_offset_s=offset,
                 clock_synced=1 if sysinfo.clock_synced() else 0,
                 undervoltage=undervoltage,
-                **signal)
+                **signal, **under_load)
         return sample
 
     def _track_dead_zone(self, sample: dict) -> None:

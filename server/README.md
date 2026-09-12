@@ -1,11 +1,49 @@
-# The survey receiver
+# The survey server
 
-A small service that accepts finished surveys from the rigs and serves them as
-web pages. One Python file, one dependency, no database — a survey is a
-directory of files.
+One small cloud box doing two jobs for the rigs:
 
-It is separate from the rig on purpose. The rig is carried through garages and
-loses power; this sits on a box that does not.
+1. **Receiving finished surveys** and serving them as web pages
+   (`viabot_receiver.py`).
+2. **Answering the UDP load test** during a walk (`iperf3`).
+
+They never compete: the load test runs *during* a survey and the upload runs
+*after*, because the rig refuses to upload over a link it is measuring.
+
+Both are separate from the rig on purpose. The rig is carried through garages
+and loses power; this sits on a box that does not.
+
+## Where to put it
+
+**Dallas.** Not for latency — for comparability. The garages in scope are in
+Florida, San Diego, the Bay Area, El Paso, North Carolina and Virginia, and a
+test server near any one of them would flatter that city's results by skipping
+hops a real session would cross. One consistent, well-connected, central server
+makes every survey comparable to every other, and Dallas is a major US backbone
+and peering hub.
+
+**Vultr or Linode**, roughly $5–6/month, both with Dallas regions. The thing
+that matters is that transfer is bundled rather than billed per gigabyte: the
+downlink UDP test is server-to-rig egress, so every walk spends the server's
+outbound allowance. A 30-minute walk at 1.5 Mbit/s is about 340 MB, so a 1 TB
+allowance is a few thousand walks. Google Cloud's us-south1 is also physically
+in Dallas but bills egress per gigabyte, which turns every test into a line
+item.
+
+Disk is the other consideration: budget roughly **100 MB per walk** for reports
+and clips, or **400 MB** if full videos are often requested.
+
+### What this measures, and what it cannot
+
+The UDP test covers the **local leg only** — garage, cell tower, carrier
+breakout — which is the part that actually varies from spot to spot inside one
+garage, and therefore the part a coverage survey exists to find. It cannot see
+the rest of the real path out to Formant's infrastructure and on to an operator
+in California or India. That part is largely fixed and does not vary by
+location, but it is not zero.
+
+So treat these numbers as a **proxy**, and calibrate: run real Formant teleop
+sessions with a real remote operator now and then, and check whether the local
+numbers actually predicted how those felt.
 
 ## What it does
 
@@ -107,6 +145,71 @@ though it were whole.
 **A chunk is appended at a stated offset or not at all.** That turns a
 duplicated or reordered chunk — the normal result of a retry over a flaky
 cellular link — into a no-op rather than a corrupted file.
+
+## The iperf3 server
+
+Install it and give it credentials. **Do not skip the authentication**: the port
+has to be open to the whole internet, because the rig arrives from a different
+carrier address on every walk, and an open iperf3 server is free bandwidth for
+whoever finds it.
+
+```bash
+sudo apt-get install -y iperf3
+sudo mkdir -p /etc/viabot
+
+# Key pair. The rig gets the public half; the private half never leaves here.
+sudo openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
+  -out /etc/viabot/iperf3_private.pem -outform PEM
+sudo openssl rsa -in /etc/viabot/iperf3_private.pem -outform PEM -pubout \
+  -out /etc/viabot/iperf3_public.pem
+
+# A user for the rig. Pick a long password; you will paste it into the rig's
+# config once and never type it again.
+USER=viabot-rig
+read -rsp 'password: ' PASS; echo
+printf '%s,%s\n' "$USER" \
+  "$(printf '{%s}%s' "$USER" "$PASS" | sha256sum | awk '{print $1}')" \
+  | sudo tee /etc/viabot/iperf3_users.csv >/dev/null
+
+sudo chmod 600 /etc/viabot/iperf3_private.pem /etc/viabot/iperf3_users.csv
+sudo chown -R viabot:viabot /etc/viabot
+
+sudo cp server/viabot-iperf3.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now viabot-iperf3
+```
+
+Open **TCP and UDP port 5201** in the provider's firewall. iperf3 negotiates
+over TCP and then sends the test traffic over UDP, so it needs both.
+
+Copy `/etc/viabot/iperf3_public.pem` to the rig — it is a public key, so email
+or a paste is fine — and put it somewhere like
+`/home/viabot/claude-code-viabot/config/iperf3_public.pem`. Then on the rig:
+
+```yaml
+udp_load:
+  enabled: true
+  server: "surveys.example.com"
+  bitrate: "1.5M"          # set this to what Formant teleop actually uses
+  username: "viabot-rig"
+  password: "<the password from above>"
+  public_key_path: "/home/viabot/claude-code-viabot/config/iperf3_public.pem"
+```
+
+Check it works before relying on it:
+
+```bash
+sudo systemctl restart viabot-survey
+curl -s localhost/api/status | .venv/bin/python -c "
+import json, sys
+w = json.load(sys.stdin)['workers']['udp_load']
+print(w['state'], '| streaming:', w['streaming'], '| loss:', w['udp_loss_pct'],
+      '| jitter:', w['udp_jitter_ms'], 'ms | spent:', w['run_mb'], 'MB')"
+```
+
+> Leave `udp_load.enabled: false` until you have a number from Formant for what
+> a teleop session actually uses. Testing at the wrong bitrate measures a link
+> you will never ask for, and it is the single most expensive thing the rig does
+> on cellular data.
 
 ## Backups
 

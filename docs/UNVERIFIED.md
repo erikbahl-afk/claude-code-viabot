@@ -96,7 +96,61 @@ connector couples enough RF for the modem to camp regardless, so every
 configuration looked alike and consecutive rounds contradicted each other.
 Treat the MAIN/DIV assignment as unknown.
 
-**Which garages are in scope**, how many levels, or what prompted the project.
+**What bitrate a real Formant teleop session uses.** This is now the number
+that decides what the UDP load test means. Measuring at the wrong rate measures
+a link nobody will ask for — a garage could fail a 25 Mbit/s test and carry
+teleop perfectly. `udp_load.bitrate` currently says `1.5M`, which is a
+placeholder and explicitly not a measurement. Ask Formant.
+
+**What the SIM's data plan actually is.** Open since the first session, and it
+now matters: a continuous UDP load test costs roughly 340 MB per 30-minute walk
+at 1.5 Mbit/s, and publishing a run costs another 60–100 MB. Both ship disabled
+and both have hard per-run ceilings, but nobody has checked what the plan
+allows.
+
+**How many levels each garage has.**
+
+## What the project is actually for
+
+From the case-and-network addendum, and worth having written down because it
+changes what counts as a good measurement:
+
+- The rig exists to decide whether a location can support **robot teleoperation
+  through Formant.io**, with human operators in **California and/or India**.
+- Formant's path is **WebRTC, so UDP**. Carriers shape UDP differently from TCP
+  and drop it first under contention, which is why a TCP speed test can pass
+  somewhere teleop will not work. Hence `udp_load`.
+- Twilio's network diagnostic tool was investigated as a way to test this and
+  **rejected** for four independent reasons: it is a browser tool needing
+  Twilio NTS credentials Formant customers do not get; headless Chromium on
+  ARM64 has documented WebRTC problems; it has no API or scripted mode; and it
+  would only ever test the hop to the nearest Twilio edge, not the path to a
+  distant operator.
+- The garages in scope are in **Florida, San Diego, the Bay Area, El Paso,
+  North Carolina and Virginia** — which is the argument for one central test
+  server rather than a local one.
+
+Still nobody has said what "good enough" means numerically. The dead-zone
+thresholds remain invented.
+
+## The enclosure
+
+Chosen: **Harbor Freight Apache 2800** ($29.99), interior 11.9 × 9 × 5.3 in,
+pick-and-pull foam. Components secured by cutting slits in the foam and zip-tying
+through them.
+
+**Overheating is a live concern, not a hypothetical one.** Foam insulates, and a
+closed case has no airflow. The two parts that matter are the cellular modem —
+which works hardest and hottest exactly when signal is weak, which is the
+condition the survey is there to characterise — and the Li-ion pack, where it is
+a safety question rather than a performance one. The agreed plan: run unlatched
+during a survey, treat closed-and-latched as transport only, route the foam
+channels so the Pi's fan exhaust and the router's vents reach an opening, and
+add vent holes with mesh only if needed.
+
+**Not yet validated.** The plan is an hour on the bench with the rig assembled
+and closed, checking `vcgencmd measure_temp` periodically, before trusting it in
+a garage. That has not been done.
 
 ## Things that are known
 

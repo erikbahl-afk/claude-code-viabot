@@ -43,8 +43,21 @@ purpose.
 pinned with `-I eth0`. Anything new that measures the uplink must pin it too, or
 it will silently measure the wrong interface.
 
-**Don't enable iperf3 by default.** It is the only thing that spends cellular
-data, and the SIM's plan is unknown. Tests assert it ships disabled.
+**Don't enable iperf3 or `udp_load` by default.** They are what spends cellular
+data, and the SIM's plan is still unknown. The continuous UDP load test is the
+most expensive thing the rig does — roughly 340 MB per 30-minute walk at
+1.5 Mbit/s — so it ships disabled with a hard per-run ceiling. Tests assert
+both ship disabled.
+
+**`udp_load.bitrate` is a placeholder, not a measurement.** The point of that
+test is to load the link the way a real Formant teleop session does; at the
+wrong rate it measures a link nobody will ask for. 1.5M is a guess pending a
+real number from Formant. Do not let it harden into a requirement.
+
+**`udp_load.datagram_bytes` must stay at 1200.** iperf3 defaults to 32 KB UDP
+datagrams, which IP fragments into two dozen packets — lose any one and the
+whole datagram counts lost, so loss reads several times worse than a real
+video packet would see, and every garage looks terrible.
 
 **The drawtext escaping is not a typo.** `ESCAPED_COLON` in `workers/camera.py`
 is two backslashes because a filtergraph is unescaped twice on the way in. One
@@ -108,6 +121,7 @@ indoor positioning. Do not make Pause merely cosmetic.
 | `viabot_survey/app.py` | Flask: captive portal, API, report building |
 | `viabot_survey/workers/` | One file per measurement source, all subclass `base.Worker` |
 | `viabot_survey/report.py` | Builds a run's result and renders it as the published page |
+| `viabot_survey/workers/udpload.py` | Jitter and loss under a teleop-sized UDP stream — the load case ping cannot see |
 | `viabot_survey/publish.py` | Resumable upload client; the receiver's byte count is the authority |
 | `viabot_survey/storage.py` | SQLite; add columns to `SAMPLE_COLUMNS` when extending `samples` |
 | `server/viabot_receiver.py` | The cloud side: accepts uploads, serves reports. Deployed separately, not on the rig |
@@ -122,14 +136,15 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 180 tests, no camera or rig needed
+.venv/bin/python -m pytest        # 195 tests, no camera or rig needed
 ```
 
 Most of the suite runs anywhere: workers are tested through their parsing and
 command-building functions rather than by invoking `ping`/`ffmpeg`/`iperf3`.
 Keep it that way for new tests.
 
-The exceptions are marked `requires_ffmpeg` and skip when it is absent. They
+The exceptions are marked `requires_ffmpeg` / `requires_iperf3` and skip when
+the binary is absent. They
 exist because the two bugs that actually reached the rig — a filtergraph ffmpeg
 would not parse, and clip cutting that had never run — were both invisible to
 mocks. If you are changing the camera or clip code, install ffmpeg first
@@ -158,7 +173,13 @@ Specifically open:
   connectors couple plenty of RF, so every configuration looked alike. Do not
   write this down as established.
 - The camera's real capabilities (`scripts/probe_camera.sh`).
-- No iperf3 server exists yet; Erik plans to stand one up.
+- The Dallas server does not exist yet. `server/README.md` has the whole
+  recipe: it hosts both the report receiver and the authenticated iperf3
+  server, on Vultr or Linode (bundled transfer, not per-GB egress).
+- What bitrate a real Formant teleop session uses. Until that is known the UDP
+  load test has no meaningful setting and stays off.
+- Whether the closed Apache 2800 case overheats. An hour on the bench checking
+  `vcgencmd measure_temp` answers it; nobody has run it.
 - Dead-zone thresholds are invented — `deadzone.provisional: true` (80% loss or
   1500 ms, sustained 5 s). The plan is to set them from one real survey walk.
   Do not quietly treat the current numbers as requirements. A finished run can

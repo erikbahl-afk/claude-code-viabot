@@ -32,6 +32,7 @@ class Iperf3Worker(Worker):
                  direction: str = "download", streams: int = 1,
                  run_data_budget_mb: float | None = 2000,
                  interface: str | None = None, enabled: bool = False,
+                 username: str = "", password: str = "", public_key_path: str = "",
                  on_result: Callable[[dict], None] | None = None, **kwargs: Any) -> None:
         super().__init__(enabled=enabled and bool(server), **kwargs)
         self.server = server
@@ -43,6 +44,9 @@ class Iperf3Worker(Worker):
         self.streams = max(1, int(streams))
         self.run_data_budget_mb = run_data_budget_mb
         self.interface = interface
+        self.username = username
+        self.password = password
+        self.public_key_path = public_key_path
         self._on_result = on_result
         self._proc: subprocess.Popen | None = None
         self._last: dict | None = None
@@ -119,7 +123,18 @@ class Iperf3Worker(Worker):
             cmd.append("-R")
         if self.interface:
             cmd += ["-B", self.interface] if _looks_like_ip(self.interface) else []
+        if self.username and self.public_key_path:
+            # Same shared server as the UDP load test, and the same reason: an
+            # unauthenticated iperf3 server on the internet is free bandwidth
+            # for whoever finds the port.
+            cmd += ["--username", self.username,
+                    "--rsa-public-key-path", self.public_key_path]
         return cmd
+
+    def build_env(self) -> dict[str, str] | None:
+        if not (self.username and self.password):
+            return None
+        return {**os.environ, "IPERF3_PASSWORD": self.password}
 
     def measure(self) -> dict:
         result: dict[str, Any] = {"ts": time.time(), "server": self.server,
@@ -150,7 +165,7 @@ class Iperf3Worker(Worker):
         try:
             self._proc = subprocess.Popen(
                 self.build_command(reverse), stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, text=True)
+                stderr=subprocess.PIPE, text=True, env=self.build_env())
             stdout, stderr = self._proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             if self._proc:

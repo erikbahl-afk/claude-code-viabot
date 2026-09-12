@@ -149,6 +149,29 @@ def quality_stats(samples: Sequence[dict]) -> dict[str, Any]:
     }
 
 
+def load_stats(samples: Sequence[dict]) -> dict[str, Any]:
+    """What the link did with a real teleop stream on it.
+
+    The count of seconds with no reading at all matters as much as the numbers.
+    iperf3's control channel is TCP, so when the link fails badly the stream
+    stops rather than reporting 100% loss — silence here is the severe case,
+    not a gap in the data.
+    """
+    readings = [s for s in samples if s.get("udp_loss_pct") is not None]
+    if not readings:
+        return {"seconds_measured": 0}
+    losses = _numbers(readings, "udp_loss_pct")
+    return {
+        "seconds_measured": len(readings),
+        "seconds_without_stream": len(samples) - len(readings),
+        "jitter_ms": _spread(_numbers(readings, "udp_jitter_ms")),
+        "loss_pct": _spread(losses),
+        "mbps": _spread(_numbers(readings, "udp_mbps")),
+        "mean_loss_pct": round(sum(losses) / len(losses), 1) if losses else None,
+        "clean_seconds": sum(1 for v in losses if v == 0),
+    }
+
+
 def build_report(storage: Any, run: dict) -> dict[str, Any]:
     """A finished run's result: how much of the walk was usable, and where not.
 
@@ -182,6 +205,7 @@ def build_report(storage: Any, run: dict) -> dict[str, Any]:
         "throughput": storage.list_throughput(run["id"]),
         "signal": signal_stats(samples),
         "quality": quality_stats(samples),
+        "under_load": load_stats(samples),
     }
 
 
@@ -435,6 +459,31 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
         _spread_row("Jitter", quality.get("jitter_ms"), " ms"),
         _spread_row("DNS lookup", quality.get("dns_ms"), " ms"),
     ])
+    load = report.get("under_load") or {}
+    if load.get("seconds_measured"):
+        load_block = (
+            "<h2>Under a teleop-sized load</h2>"
+            '<dl class="stats">' + "".join([
+                _stat("Seconds measured", str(load["seconds_measured"])),
+                _stat("Clean seconds", str(load.get("clean_seconds", 0))),
+                _stat("Mean loss", f"{load.get('mean_loss_pct')}%"
+                      if load.get("mean_loss_pct") is not None else "—"),
+                _stat("No stream", f"{load.get('seconds_without_stream', 0)}s"),
+            ]) + "</dl>"
+            '<table><thead><tr><th>Measurement</th><th class="num">Best</th>'
+            '<th class="num">Median</th><th class="num">95th</th>'
+            '<th class="num">Worst</th></tr></thead><tbody>'
+            + _spread_row("UDP jitter", load.get("jitter_ms"), " ms")
+            + _spread_row("UDP packet loss", load.get("loss_pct"), "%")
+            + "</tbody></table>"
+            '<p class="sub">Measured with a constant UDP stream at the bitrate a '
+            "teleoperation session uses, rather than on an idle link. Seconds "
+            "with <em>no stream at all</em> are the severe case, not missing "
+            "data: the link failed badly enough that the test itself could not "
+            "stay up.</p>")
+    else:
+        load_block = ""
+
     radio = "".join([
         _radio_row("RSRP (signal strength)", signal.get("rsrp"), " dBm"),
         _radio_row("SINR (signal quality)", signal.get("sinr"), " dB"),
@@ -518,6 +567,8 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
   <table><thead><tr><th>Measurement</th><th class="num">Best</th>
   <th class="num">Median</th><th class="num">95th</th><th class="num">Worst</th>
   </tr></thead><tbody>{latency}</tbody></table>
+
+  {load_block}
 
   <h2>Radio</h2>
   <dl class="stats">{radio_summary}</dl>
