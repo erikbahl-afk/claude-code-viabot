@@ -266,6 +266,84 @@ def _parse_at_output(text: str) -> dict[str, Any]:
     return parsed
 
 
+# ---------------------------------------------------------------------------
+# Quectel +QENG parsing
+# ---------------------------------------------------------------------------
+
+#: Fields of ``+QENG: "servingcell",...`` for an LTE serving cell, in order,
+#: after the leading ``"servingcell"`` and state tokens. Taken from Quectel's
+#: LTE AT command manual and confirmed against the rig's own EP06-A: in a
+#: reading of RSRP -104 / RSSI -78 on a 5 MHz carrier the 26 dB gap between
+#: them matches 10*log10(300 subcarriers) = 24.8 dB, which only lines up if
+#: the fields sit in this order.
+QENG_LTE_FIELDS = (
+    "is_tdd", "mcc", "mnc", "cell_id", "pcid", "earfcn", "band",
+    "ul_bandwidth", "dl_bandwidth", "tac", "rsrp", "rsrq", "rssi",
+    "sinr", "cqi",
+)
+
+#: Quectel reports bandwidth as an index, not a number of megahertz.
+QENG_BANDWIDTH_MHZ = {0: 1.4, 1: 3.0, 2: 5.0, 3: 10.0, 4: 15.0, 5: 20.0}
+
+#: States that mean "no serving cell to report", not "here is a bad one".
+QENG_NO_CELL_STATES = {"SEARCH", "LIMSRV"}
+
+
+def _unquote(token: str) -> str:
+    token = token.strip()
+    if len(token) >= 2 and token[0] == token[-1] == '"':
+        return token[1:-1]
+    return token
+
+
+def parse_qeng(text: str) -> dict[str, Any]:
+    """Parse ``AT+QENG="servingcell"`` output into canonical signal fields.
+
+    Returns ``{}`` when the modem has no serving cell to report, when it
+    answered ``ERROR``, or when the line is not one we understand — an empty
+    reading is honest, an invented one is not.
+
+    Only LTE is decoded field by field. The rig's modem is an EP06-A, which is
+    LTE Cat 6 and cannot do anything else; if a different modem ever reports
+    another technology we record what it is and leave the numbers alone rather
+    than guessing at a layout we have never seen.
+    """
+    for line in str(text).splitlines():
+        line = line.strip()
+        if not line.upper().startswith("+QENG:"):
+            continue
+        tokens = [_unquote(t) for t in line.partition(":")[2].split(",")]
+        if not tokens or tokens[0] != "servingcell":
+            continue
+        rest = tokens[1:]
+        if not rest:
+            continue
+        state = rest[0].upper()
+        if state in QENG_NO_CELL_STATES:
+            return {}
+        tech = rest[1].upper() if len(rest) > 1 else ""
+        if tech != "LTE":
+            return {"tech": tech} if tech else {}
+
+        parsed: dict[str, Any] = {"tech": "LTE", "state": state}
+        for name, value in zip(QENG_LTE_FIELDS, rest[2:]):
+            if value in ("", "-"):
+                continue
+            if name in NUMERIC_FIELDS or name in ("pcid", "earfcn", "mcc", "mnc", "cqi"):
+                number = _coerce_number(value)
+                if number is not None:
+                    parsed[name] = number
+            else:
+                parsed[name] = value
+
+        bandwidth = _coerce_number(parsed.pop("dl_bandwidth", None))
+        if bandwidth is not None:
+            parsed["dl_bandwidth_mhz"] = QENG_BANDWIDTH_MHZ.get(int(bandwidth))
+        parsed.pop("ul_bandwidth", None)
+        return parsed
+    return {}
+
+
 def build_client(config: dict, router_address: str) -> RouterClient:
     """Construct the client named by ``router.client`` in the config."""
     kind = str(config.get("client", "null")).lower()
