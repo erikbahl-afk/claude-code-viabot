@@ -74,7 +74,7 @@ see the commit for 2026-09-11.
 | **Power** | `throttled=0x0` — clean, no undervoltage since boot. Measured on mains-adjacent conditions, not mid-walk. |
 | **Uplink** | Router 0.4 ms; 8.8.8.8 at 40–57 ms, 0% loss. Egress address is in T-Mobile space. |
 | **The modem** | A **Quectel EP06-A** — LTE Cat 6, *not* 5G, whatever LuCI's "Protocol: 5G" interface label says. The next hop past the router is 192.168.225.1, the Quectel factory default, consistent with it doing its own NAT. |
-| **Signal metrics** | Settled. The router has no modem API at all — `/ubus` 404s, there is no LuCI RPC, and `ubus list` carries no modem object. The readings come from `AT+QENG="servingcell"` on `/dev/ttyUSB2`, over SSH from the Pi. `AT+QRSRP` is unsupported on this firmware. See [ROUTER.md](ROUTER.md). |
+| **Signal metrics** | Working on the rig, verified 2026-09-12: `client: "at_ssh"` returned LTE band 12, cell 1452806, RSRP −100, RSRQ −12, SINR 11, RSSI −73 within seconds of a restart. The router has no modem API at all — `/ubus` 404s, there is no LuCI RPC, and `ubus list` carries no modem object. The readings come from `AT+QENG="servingcell"` on `/dev/ttyUSB2`, over SSH from the Pi. `AT+QRSRP` is unsupported on this firmware. See [ROUTER.md](ROUTER.md). |
 
 ## Never established at all
 

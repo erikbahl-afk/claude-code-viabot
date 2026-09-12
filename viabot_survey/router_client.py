@@ -348,7 +348,10 @@ def parse_qeng(text: str) -> dict[str, Any]:
         if tech != "LTE":
             return {"tech": tech} if tech else {}
 
-        parsed: dict[str, Any] = {"tech": "LTE", "state": state}
+        # Named modem_state, not state: this is the modem's view of its own
+        # connection ("NOCONN", "CONNECT"), and a worker already has a state
+        # meaning something else entirely.
+        parsed: dict[str, Any] = {"tech": "LTE", "modem_state": state}
         for name, value in zip(QENG_LTE_FIELDS, rest[2:]):
             if value in ("", "-"):
                 continue
