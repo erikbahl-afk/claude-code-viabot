@@ -122,6 +122,12 @@ cut between a chunk landing and the rig learning that it did. Do not "optimise"
 that HEAD away. `tests/test_publish.py` interrupts real transfers to a real
 server; keep it that way, because nothing else catches this class of bug.
 
+**Enabling `udp_load` moves the headline number.** Dead zones are detected
+from ping, ping runs continuously, and with the load test active ping is
+measuring a loaded link rather than an idle one. More dead zones will be found
+in the same garage. Runs from before and after are not comparable, and the
+thresholds were conceived for an idle link — see `docs/UNVERIFIED.md`.
+
 **Pause means "this time did not happen".** It stops measuring and recording
 both, so paused seconds leave no samples and no video. That is what makes the
 headline percentage meaningful, since it is a percentage of time and there is no
@@ -151,7 +157,7 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 207 tests, no camera or rig needed
+.venv/bin/python -m pytest        # 211 tests, no camera or rig needed
 ```
 
 Most of the suite runs anywhere: workers are tested through their parsing and

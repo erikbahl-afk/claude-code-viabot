@@ -105,6 +105,47 @@ placeholder and explicitly not a measurement. Ask Formant.
 
 **How many levels each garage has.**
 
+## Known limitations of the method
+
+Not bugs — consequences of what this rig is, worth stating so nobody discovers
+them from a surprising number.
+
+**Turning on `udp_load` will change the headline percentage.** Ping runs
+continuously and is what dead zones are detected from. With the load test
+active, ping is measuring a link that is carrying a teleop-sized stream rather
+than an idle one, so loss and latency will be worse and more dead zones will be
+found — in the same garage. That is arguably the more honest number, but it
+means **results from before and after enabling it are not comparable**, and the
+thresholds were conceived for an idle link. Set thresholds after deciding
+whether the load test is on, not before.
+
+**The percentage is only as good as the operator's discipline.** It is a share
+of time, not of floor area, so it holds only if the walk is at a steady pace
+and paused whenever standing still. A customer operating the rig who does not
+pause while chatting in a good spot will inflate the result, and nothing in the
+software can detect that — there is no positioning and no motion sensor.
+
+**Nothing says which level a dead zone was on.** Correlation is by timestamp to
+video, so the level is whatever the footage shows. Manual marking was
+explicitly rejected, and this is the cost of that.
+
+**Nothing prunes old surveys.** A 30-minute walk leaves roughly 250 MB of
+video. The card is 107 GB, so around 400 walks fill it. The failure is at least
+loud rather than silent: the camera refuses to record below its disk floor and
+says so on the dashboard. `DELETE /api/runs/<id>` now removes a run's video,
+clips and report along with its rows.
+
+**A clock step mid-run would corrupt the timeline.** The Pi has no RTC. The run
+start warns when the clock is unsynchronised, but nothing watches for NTP
+stepping it *during* a walk. A backward step would put samples out of order and
+break video correlation for everything after it.
+
+**The rig carries plaintext secrets in public.** `config/config.yaml` holds the
+Wi-Fi passphrase, the router password, and — once publishing is on — the upload
+token and the iperf3 password. The card is not encrypted and the rig is carried
+through public car parks. Treat a lost rig as all of those being disclosed, and
+rotate them.
+
 ## What the project is actually for
 
 From the case-and-network addendum, and worth having written down because it
