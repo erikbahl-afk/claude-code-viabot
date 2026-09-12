@@ -387,6 +387,10 @@ class Storage:
         return dict(row) if row else None
 
     def delete_run(self, run_id: str) -> None:
+        # samples, dead_zones, throughput and uploads cascade; events carry a
+        # run_id without a foreign key, so they would otherwise be left behind
+        # pointing at a run that no longer exists.
+        self._write("DELETE FROM events WHERE run_id = ?", (run_id,))
         self._write("DELETE FROM runs WHERE id = ?", (run_id,))
 
     # -- samples -------------------------------------------------------------

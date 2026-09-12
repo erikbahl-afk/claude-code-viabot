@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -473,6 +474,26 @@ class SurveyRunner:
         self.storage.add_event(f"queued {queued} file(s) for upload",
                                source="publisher", run_id=run_id)
         return queued
+
+    def discard_run(self, run_id: str) -> dict[str, Any]:
+        """Delete a run and everything it left on the card.
+
+        Deleting the database rows alone would free a few hundred kilobytes and
+        leave a few hundred megabytes: the video is the bulk of a survey, and
+        the card filling is what stops the *next* walk from recording.
+        """
+        removed = []
+        for directory in (self.config.video_dir / run_id,
+                          Path(self.config.data_dir) / "clips" / run_id,
+                          Path(self.config.data_dir) / "reports" / run_id):
+            if directory.is_dir():
+                freed = sum(f.stat().st_size for f in directory.rglob("*") if f.is_file())
+                shutil.rmtree(directory, ignore_errors=True)
+                removed.append({"path": str(directory),
+                                "freed_mb": round(freed / 1024 ** 2, 1)})
+        self.storage.delete_run(run_id)
+        return {"deleted": run_id, "removed": removed,
+                "freed_mb": round(sum(r["freed_mb"] for r in removed), 1)}
 
     def assemble_full_video(self, run_id: str, out_path: Path) -> None:
         """Join the run's segments into one file, without re-encoding.

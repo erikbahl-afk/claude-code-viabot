@@ -206,8 +206,9 @@ def create_app(config: Config, runner: SurveyRunner, storage: Storage,
     def api_delete_run(run_id: str):
         if run_id == runner.active_run_id:
             return jsonify({"error": "cannot delete the run in progress"}), 409
-        storage.delete_run(run_id)
-        return jsonify({"deleted": run_id})
+        if storage.get_run(run_id) is None:
+            return jsonify({"error": "unknown run"}), 404
+        return jsonify(runner.discard_run(run_id))
 
     @app.route("/api/runs/<run_id>/samples.csv")
     def api_export_samples(run_id: str):
