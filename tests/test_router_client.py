@@ -54,13 +54,37 @@ def test_build_client_selects_the_configured_backend():
     assert isinstance(build_client({"client": "luci"}, "192.168.1.1"), LuciRouterClient)
 
 
-def test_build_client_rejects_a_typo():
-    try:
-        build_client({"client": "ubuss"}, "192.168.1.1")
-    except ValueError as exc:
-        assert "ubuss" in str(exc)
-    else:
-        raise AssertionError("expected a ValueError")
+def test_build_client_reports_a_typo_when_someone_is_waiting_on_the_answer():
+    with pytest.raises(ValueError, match="ubuss"):
+        build_client({"client": "ubuss"}, "192.168.1.1", strict=True)
+
+
+def test_a_typo_in_the_client_name_does_not_take_the_rig_down():
+    """This crashed the service on startup once, which took the dashboard with
+    it — and the dashboard is how an update gets applied, so the only way back
+    was a keyboard and an SSH session. Signal metrics are an optional extra;
+    losing them is not worth losing the rig."""
+    client = build_client({"client": "ubuss"}, "192.168.1.1")
+    assert isinstance(client, NullRouterClient)
+    assert client.fetch() == {}
+
+
+def test_the_fallback_says_why_it_is_collecting_nothing():
+    """Otherwise the failure is invisible: the rig runs, the column stays
+    empty, and nobody finds out until they go looking for RSRP after a walk."""
+    client = build_client({"client": "ubuss"}, "192.168.1.1")
+    assert "ubuss" in client.reason
+
+
+def test_the_reason_reaches_the_worker_status():
+    from viabot_survey.workers.router import RouterWorker
+
+    worker = RouterWorker(client=build_client({"client": "ubuss"}, "192.168.1.1"))
+    assert "ubuss" in worker.status()["reason"]
+
+
+def test_a_deliberate_null_has_no_reason_to_report():
+    assert build_client({"client": "null"}, "192.168.1.1").reason is None
 
 
 # ---- Quectel +QENG serving-cell parsing ------------------------------------

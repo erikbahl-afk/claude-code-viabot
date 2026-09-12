@@ -67,6 +67,8 @@ class RouterWorker(Worker):
     def snapshot(self) -> dict[str, Any]:
         return {
             "client": self.client.name,
+            # Why nothing is being collected, when a client could not be built.
+            "reason": getattr(self.client, "reason", None),
             "last_ok_ts": self._last_ok_ts,
             "last_error": self._last_error,
             **self._latest,
