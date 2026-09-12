@@ -239,3 +239,54 @@ def test_a_real_authenticated_server_accepts_the_rig_and_nobody_else(tmp_path):
         worker.stop()
         server.terminate()
         server.wait(timeout=5)
+
+
+# ---- when it is allowed to run ---------------------------------------------
+#
+# The stream is a deliberate, continuous load on the uplink. Left running
+# between walks it would burn the link for nothing, and fight the publisher for
+# the same uplink while that is trying to send the last run's clips.
+
+@pytest.fixture
+def loaded_runner(config, storage):
+    """A runner with the load test switched on, pointed at an address that does
+    not answer. Whether iperf3 connects is beside the point here — the question
+    is only whether the rig lets the worker run at all."""
+    from viabot_survey.runner import SurveyRunner
+
+    config._data["udp_load"]["enabled"] = True
+    config._data["udp_load"]["server"] = "192.0.2.1"     # TEST-NET-1, unroutable
+    survey = SurveyRunner(config, storage)
+    survey.start()
+    yield survey
+    survey.shutdown()
+
+
+def _streaming(worker) -> bool:
+    thread = worker._thread
+    return thread is not None and thread.is_alive()
+
+
+def test_the_stream_does_not_run_between_walks(loaded_runner):
+    assert loaded_runner.udp_load.enabled
+    assert not _streaming(loaded_runner.udp_load)
+
+
+def test_the_stream_runs_for_the_length_of_a_walk(loaded_runner):
+    loaded_runner.start_run(label="Level 2")
+    assert _streaming(loaded_runner.udp_load)
+
+    loaded_runner.stop_run()
+    assert not _streaming(loaded_runner.udp_load)
+
+
+def test_pausing_stops_the_stream_too(loaded_runner):
+    """Pause means this time did not happen. Streaming while the operator
+    stands still spends the uplink on the one period it tells you nothing
+    about — and leaves samples for seconds the report says never happened."""
+    loaded_runner.start_run(label="Level 2")
+    loaded_runner.pause()
+    assert not _streaming(loaded_runner.udp_load)
+
+    loaded_runner.resume()
+    assert _streaming(loaded_runner.udp_load)

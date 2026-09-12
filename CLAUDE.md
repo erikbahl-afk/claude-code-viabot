@@ -43,11 +43,16 @@ purpose.
 pinned with `-I eth0`. Anything new that measures the uplink must pin it too, or
 it will silently measure the wrong interface.
 
-**Don't enable iperf3 or `udp_load` by default.** They are what spends cellular
-data, and the SIM's plan is still unknown. The continuous UDP load test is the
-most expensive thing the rig does — roughly 340 MB per 30-minute walk at
-1.5 Mbit/s — so it ships disabled with a hard per-run ceiling. Tests assert
-both ship disabled.
+**Don't enable iperf3 or `udp_load` by default.** The SIM is unlimited, so this
+is no longer about the data bill — they ship disabled because neither has a
+server to talk to yet and `udp_load` has no meaningful bitrate until Formant
+supplies one. Tests assert both ship disabled.
+
+**`udp_load` runs only during an active, unpaused run.** It is a deliberate
+continuous load on the uplink: left running between walks it spends the link
+for nothing and competes with the publisher sending the last run's clips, and
+left running through a pause it contradicts what Pause means. The runner starts
+and stops it alongside the camera, for the same reasons.
 
 **`udp_load.bitrate` is a placeholder, not a measurement.** The point of that
 test is to load the link the way a real Formant teleop session does; at the
@@ -136,7 +141,7 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 195 tests, no camera or rig needed
+.venv/bin/python -m pytest        # 198 tests, no camera or rig needed
 ```
 
 Most of the suite runs anywhere: workers are tested through their parsing and

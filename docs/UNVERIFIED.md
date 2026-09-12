@@ -74,6 +74,7 @@ see the commit for 2026-09-11.
 | **Power** | `throttled=0x0` — clean, no undervoltage since boot. Measured on mains-adjacent conditions, not mid-walk. |
 | **Uplink** | Router 0.4 ms; 8.8.8.8 at 40–57 ms, 0% loss. Egress address is in T-Mobile space. |
 | **The modem** | A **Quectel EP06-A** — LTE Cat 6, *not* 5G, whatever LuCI's "Protocol: 5G" interface label says. The next hop past the router is 192.168.225.1, the Quectel factory default, consistent with it doing its own NAT. |
+| **The SIM's data plan** | **Unlimited** (Erik, 2026-09-12). Data volume is therefore not a constraint on what the rig measures. Time and link capacity still are: a 250 MB video upload over a weak cellular link takes as long as it takes. |
 | **Signal metrics** | Working on the rig, verified 2026-09-12: `client: "at_ssh"` returned LTE band 12, cell 1452806, RSRP −100, RSRQ −12, SINR 11, RSSI −73 within seconds of a restart. The router has no modem API at all — `/ubus` 404s, there is no LuCI RPC, and `ubus list` carries no modem object. The readings come from `AT+QENG="servingcell"` on `/dev/ttyUSB2`, over SSH from the Pi. `AT+QRSRP` is unsupported on this firmware. See [ROUTER.md](ROUTER.md). |
 
 ## Never established at all
@@ -101,12 +102,6 @@ that decides what the UDP load test means. Measuring at the wrong rate measures
 a link nobody will ask for — a garage could fail a 25 Mbit/s test and carry
 teleop perfectly. `udp_load.bitrate` currently says `1.5M`, which is a
 placeholder and explicitly not a measurement. Ask Formant.
-
-**What the SIM's data plan actually is.** Open since the first session, and it
-now matters: a continuous UDP load test costs roughly 340 MB per 30-minute walk
-at 1.5 Mbit/s, and publishing a run costs another 60–100 MB. Both ship disabled
-and both have hard per-run ceilings, but nobody has checked what the plan
-allows.
 
 **How many levels each garage has.**
 

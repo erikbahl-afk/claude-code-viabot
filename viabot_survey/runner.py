@@ -196,8 +196,13 @@ class SurveyRunner:
         """Start the always-on workers and the sampling loop."""
         self._stop.clear()
         for worker in self.workers:
-            if worker is self.camera:
-                continue  # the camera only records during a run
+            if worker in (self.camera, self.udp_load):
+                # Both only run during a walk. The camera for the obvious
+                # reason; the UDP load test because it is a deliberate,
+                # continuous load on the uplink — left running between walks it
+                # would burn the link for nothing and fight the publisher for
+                # the same uplink while it is trying to send the last run.
+                continue
             worker.start()
         self._sampler = threading.Thread(target=self._sample_loop, name="sampler",
                                          daemon=True)
@@ -302,6 +307,8 @@ class SurveyRunner:
             # far the most expensive thing the rig does on cellular, so its
             # ceiling is per-run rather than per-lifetime.
             self.udp_load.begin_run()
+            if self.udp_load.enabled:
+                self.udp_load.start()
             if self.camera.enabled:
                 self.camera.set_output_dir(video_dir)
                 self.camera.start()
@@ -320,6 +327,7 @@ class SurveyRunner:
 
         segments = self.camera.segments()
         self.camera.stop()
+        self.udp_load.stop()
         self.camera.output_dir = None
         self.storage.end_run(run["id"])
         self.storage.add_event(f"run {run['id']} stopped", source="runner",
@@ -494,6 +502,11 @@ class SurveyRunner:
             self._paused = True
             run_id = self._run["id"]
         self.camera.stop()
+        # Pause means this time did not happen, so the load stops with the
+        # recording. Leaving it streaming would also spend the uplink while
+        # the operator is standing still, which is exactly the time it tells
+        # you nothing about.
+        self.udp_load.stop()
         self._dead_streak_s = 0.0
         self.storage.add_event("run paused", source="runner", run_id=run_id)
         return True
@@ -510,6 +523,8 @@ class SurveyRunner:
             # clock, so correlation still holds across the gap.
             self.camera.set_output_dir(video_dir)
             self.camera.start()
+        if self.udp_load.enabled:
+            self.udp_load.start()
         self.storage.add_event("run resumed", source="runner", run_id=run_id)
         return True
 

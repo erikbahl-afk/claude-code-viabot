@@ -108,10 +108,14 @@ iperf3:
 # receiving end sees every second, which is the same question the remote
 # operator is asking, asked at every point in the garage.
 #
-# THIS IS THE MOST EXPENSIVE THING THE RIG DOES. The bill is simply bitrate
-# times the length of the walk: at 1.5 Mbit/s a 30-minute walk spends about
-# 340 MB of cellular data. Nothing else comes close. It ships disabled, and the
-# per-run ceiling below is a hard stop rather than a guideline.
+# This is by far the most data the rig moves — bitrate times the length of the
+# walk, so about 340 MB for a 30-minute walk at 1.5 Mbit/s. The SIM is
+# unlimited, so that is a load question rather than a cost one, but it is still
+# the reason the ceiling below exists.
+#
+# It runs only while a walk is active, and stops when the run is paused. Left
+# streaming between walks it would spend the uplink for nothing and compete
+# with the publisher sending the last run's clips.
 #
 # Needs an iperf3 server — see server/README.md, which runs one alongside the
 # report receiver on the same box.
@@ -137,10 +141,12 @@ udp_load:
   # the only direction that reports jitter and loss at the rig's end.
   direction: download
 
-  # Hard ceiling on cellular data per run. The stream stops when it is reached
-  # and the walk carries on without it. null = no limit, which on an unknown
-  # SIM plan is a way to find out what the plan was the expensive way.
-  run_data_budget_mb: 500
+  # Runaway guard, not a cost control — the SIM is unlimited. It exists so a
+  # stream that somehow outlives its walk cannot run indefinitely. Set it well
+  # above what a real walk spends (bitrate x duration), because hitting it
+  # mid-walk stops the measurement and leaves the rest of the garage unmeasured.
+  # At 1.5 Mbit/s, 2000 MB is about four hours.
+  run_data_budget_mb: 2000
 
   # iperf3's own authentication. Leave blank only for a server that cannot be
   # reached from the internet — an open one is a bandwidth allowance anyone who
