@@ -59,70 +59,97 @@ numbers actually predicted how those felt.
 
 ## Standing one up
 
-Any small cloud box will do; the work is I/O, not CPU. Disk is what matters:
-budget roughly **100 MB per walk** for clips, or **400 MB** if full videos are
-often requested.
+Any small cloud box will do; the work is I/O, not CPU. A **$5–6/month Vultr or
+Linode instance in Dallas** is the intended shape — 1 GB of RAM is plenty.
+
+**You need a domain name first.** Point an A record at the box's IP (a
+subdomain of something ViaBot already owns is ideal — `surveys.viabot...`).
+Without one there is no way to get a TLS certificate, and the upload token and
+viewer password would cross the internet in clear text.
+
+Then, on the box:
 
 ```bash
-sudo adduser --system --group --home /opt/viabot-receiver viabot
-sudo mkdir -p /opt/viabot-receiver /var/lib/viabot-receiver
-sudo chown -R viabot:viabot /opt/viabot-receiver /var/lib/viabot-receiver
-
-# Copy server/viabot_receiver.py and server/requirements.txt into
-# /opt/viabot-receiver, then:
-sudo -u viabot python3 -m venv /opt/viabot-receiver/.venv
-sudo -u viabot /opt/viabot-receiver/.venv/bin/pip install -r /opt/viabot-receiver/requirements.txt
+sudo apt-get update && sudo apt-get install -y git
+git clone https://github.com/erikbahl-afk/claude-code-viabot.git
+cd claude-code-viabot
+sudo ./server/setup.sh --domain surveys.example.com
 ```
 
-Generate the two secrets and write them where only root can read them:
+That is the whole thing. The script prints, once, the exact block to paste into
+`config/config.yaml` on the rig — including the generated secrets — and tells
+you which firewall ports to open.
 
-```bash
-printf 'VIABOT_RECEIVER_TOKEN=%s\nVIABOT_RECEIVER_VIEWER_PASSWORD=%s\n' \
-  "$(openssl rand -base64 24)" "$(openssl rand -base64 18)" \
-  | sudo tee /etc/viabot-receiver.env >/dev/null
-sudo chmod 600 /etc/viabot-receiver.env
-```
+It is safe to re-run after a repo update: it leaves existing secrets alone
+unless you pass `--rotate-secrets`, and rotating means updating every rig.
 
-Then install the unit:
+If you genuinely have no domain, `--no-tls` will set it up on a bare IP and
+warn you about what you are giving up. Prefer a domain.
 
-```bash
-sudo cp server/viabot-receiver.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now viabot-receiver
-curl -s localhost:8089/healthz
-```
+### What the script does
 
-### Put TLS in front of it
+1. Installs `python3-venv`, `iperf3`, `openssl` and Caddy.
+2. Creates a `viabot` system account, `/opt/viabot-receiver` and
+   `/var/lib/viabot-receiver`.
+3. Generates three secrets into `/etc/viabot-receiver.env` (mode 600, root
+   only): the upload token, the viewer password, and the iperf3 password.
+4. Generates an RSA key pair for iperf3 authentication and builds the
+   authorised-users file from the password.
+5. Installs and starts three services — the receiver, and one iperf3 server per
+   test direction.
+6. Writes a Caddyfile that terminates TLS and proxies to the receiver on
+   localhost, with no request body limit so a several-hundred-megabyte video
+   chunk is not truncated.
+7. Checks everything actually started, and prints the rig configuration.
 
-The service binds to `127.0.0.1` and speaks plain HTTP, because it is meant to
-sit behind a reverse proxy that terminates TLS. Do not expose it directly: the
-upload token and the viewer password would both cross the internet in clear.
+### Firewall
 
-With Caddy, the whole configuration is two lines:
+Open these in the provider's control panel — the script does not touch it,
+because on Vultr and Linode the firewall lives outside the box:
 
-```
-surveys.example.com {
-    reverse_proxy 127.0.0.1:8089
-}
-```
+| Port | Why |
+|---|---|
+| TCP 80, 443 | The report pages. Caddy needs 80 to obtain its certificate. |
+| TCP **and** UDP 5201 | Uplink load test |
+| TCP **and** UDP 5202 | Downlink load test |
 
-Caddy gets a certificate on its own. nginx with certbot works equally well —
-set `client_max_body_size 0;` so it does not truncate a chunk.
+iperf3 negotiates over TCP and then sends the test traffic over UDP, so it
+needs both protocols on both ports.
+
+### Two iperf3 instances, on purpose
+
+One iperf3 server runs one test at a time — a second client is told "the server
+is busy" — and the rig measures both directions at once, because a teleop
+session is asymmetric and the two halves fail differently.
 
 ## Pointing a rig at it
 
-In `config/config.yaml` on the rig:
+`setup.sh` prints the exact block to paste into `config/config.yaml` on the
+rig, with the real secrets filled in. It looks like this:
 
 ```yaml
 publish:
   enabled: true
   url: "https://surveys.example.com"
-  token: "<the VIABOT_RECEIVER_TOKEN from above>"
+  token: "<printed by setup.sh>"
+
+udp_load:
+  enabled: true
+  server: "surveys.example.com"
+  username: "viabot-rig"
+  password: "<printed by setup.sh>"
+  public_key_path: "/home/viabot/claude-code-viabot/config/iperf3_public.pem"
 ```
 
-`sudo systemctl restart viabot-survey`, and the next finished walk publishes
-itself. Runs finished *before* this was switched on can be queued with
-`POST /api/runs/<run-id>/publish` on the rig.
+Then `sudo systemctl restart viabot-survey` on the rig, and the next finished
+walk publishes itself. Runs that finished *before* publishing was switched on
+were never queued; queue one with
+`curl -X POST http://192.168.50.1/api/runs/<run-id>/publish`.
+
+> `config/config.yaml` is gitignored, and every value under a key named
+> `password` or `token` is masked before it reaches the database, the API or
+> the dashboard. Still — this repository is public. Do not paste these into an
+> issue, a commit, or a Claude session.
 
 ## The upload protocol
 
@@ -148,72 +175,24 @@ cellular link — into a no-op rather than a corrupted file.
 
 ## The iperf3 server
 
-Install it and give it credentials. **Do not skip the authentication**: the port
-has to be open to the whole internet, because the rig arrives from a different
-carrier address on every walk, and an open iperf3 server is free bandwidth for
-whoever finds it.
+`setup.sh` handles all of this; what follows is what it did, for when something
+needs checking by hand.
 
-```bash
-sudo apt-get install -y iperf3
-sudo mkdir -p /etc/viabot
+Two systemd instances of `iperf3 --server`, on ports 5201 and 5202, both
+started from `viabot-iperf3@.service`. Both authenticate against
+`/etc/viabot/iperf3_users.csv` using the RSA key pair in the same directory.
 
-# Key pair. The rig gets the public half; the private half never leaves here.
-sudo openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
-  -out /etc/viabot/iperf3_private.pem -outform PEM
-sudo openssl rsa -in /etc/viabot/iperf3_private.pem -outform PEM -pubout \
-  -out /etc/viabot/iperf3_public.pem
-
-# A user for the rig. Pick a long password; you will paste it into the rig's
-# config once and never type it again.
-USER=viabot-rig
-read -rsp 'password: ' PASS; echo
-printf '%s,%s\n' "$USER" \
-  "$(printf '{%s}%s' "$USER" "$PASS" | sha256sum | awk '{print $1}')" \
-  | sudo tee /etc/viabot/iperf3_users.csv >/dev/null
-
-sudo chmod 600 /etc/viabot/iperf3_private.pem /etc/viabot/iperf3_users.csv
-sudo chown -R viabot:viabot /etc/viabot
-
-sudo cp server/viabot-iperf3@.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now viabot-iperf3@5201    # uplink
-sudo systemctl enable --now viabot-iperf3@5202    # downlink
-```
-
-**Two instances, on purpose.** One iperf3 server runs one test at a time — a
-second client is told "the server is busy" — and the rig measures both
-directions at once, because a teleop session is asymmetric and the two halves
-fail differently.
-
-Open **TCP and UDP ports 5201 and 5202** in the provider's firewall. iperf3
-negotiates over TCP and then sends the test traffic over UDP, so it needs
-both.
+**Authentication is not optional here.** The ports have to be open to the whole
+internet, because the rig arrives from a different carrier address on every
+walk, and an open iperf3 server is a bandwidth allowance that anyone who finds
+it can spend.
 
 Copy `/etc/viabot/iperf3_public.pem` to the rig — it is a public key, so email
-or a paste is fine — and put it somewhere like
-`/home/viabot/claude-code-viabot/config/iperf3_public.pem`. Then on the rig:
+or a paste is fine.
 
-```yaml
-udp_load:
-  enabled: true
-  server: "surveys.example.com"
-  username: "viabot-rig"
-  password: "<the password from above>"
-  public_key_path: "/home/viabot/claude-code-viabot/config/iperf3_public.pem"
-  uplink_bitrate: "2M"      # what the robot sends: its video
-  downlink_bitrate: "300k"  # what the operator sends: commands
-```
-
-Both bitrates come from one place — the operator's browser during a live
-session, at `chrome://webrtc-internals`. Scroll past the event list to the
-stats, and read `inbound-rtp (kind=video)` for what the robot sends up, and the
-outbound streams for what the operator sends down. The values shipped in the
-config are **placeholders**, not measurements.
-
-Check it works before relying on it:
+Check it from the rig after configuring:
 
 ```bash
-sudo systemctl restart viabot-survey
 curl -s localhost/api/status | .venv/bin/python -c "
 import json, sys
 status = json.load(sys.stdin)['workers']
@@ -231,9 +210,11 @@ it is working. Downlink readings appear within a second or two.
 > purpose: they are a deliberate load on the uplink and would otherwise compete
 > with the report upload.
 
-> Leave `udp_load.enabled: false` until you have read the real bitrates off a
-> live session. Testing at the wrong rate measures a link nobody will ever ask
-> for.
+### What to set the bitrates to
+
+They are already set from a real measurement — `uplink_bitrate: 1.5M`,
+`downlink_bitrate: 300k`. See `docs/UNVERIFIED.md` for where those came from
+and when to re-measure.
 
 ## Backups
 

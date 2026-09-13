@@ -155,15 +155,21 @@ udp_load:
   # server runs one test at a time, so the two directions cannot share one.
   uplink_enabled: true
   uplink_port: 5201
-  # MEASURED from a live Formant teleop session, 2026-09-12: the robot sent
-  # 645 kbit/s mean, 672 median, 764 peak over a 37-second window. 1M sits
-  # just above the peak, so a spot that carries this carries a real session
-  # with room to spare.
+  # Deliberately about twice what a real session was measured using.
   #
-  # Note this is not a Formant *specification*, it is what one session with
-  # one robot's camera settings actually used. Re-measure if the video
-  # resolution or frame rate changes.
-  uplink_bitrate: 1M
+  # MEASURED from a live Formant teleop session, 2026-09-12: the robot sent
+  # 645 kbit/s mean, 672 median, 744 at the 95th, 764 peak over a 37-second
+  # window. 1.5M is 2.3x that mean and essentially twice the peak.
+  #
+  # Testing above the real rate is the safe direction to be wrong in: a spot
+  # that carries 1.5 Mbit/s certainly carries 650 kbit/s, so a garage this
+  # test passes is genuinely workable, and one it fails is worth looking at
+  # rather than dismissing. It also leaves room for a robot with a higher
+  # resolution camera than the one measured.
+  #
+  # This is not a Formant *specification* — it is what one robot's camera
+  # settings produced. Re-measure if the resolution or frame rate changes.
+  uplink_bitrate: 1.5M
   # Seconds per block. Shorter recovers readings sooner after a dead spot;
   # longer spends less time re-establishing the test.
   uplink_block_s: 30

@@ -57,7 +57,8 @@ and stops it alongside the camera, for the same reasons.
 **`udp_load` bitrates are measured, not guessed — but from one session.** A
 live Formant teleop session on 2026-09-12 sent **645 kbit/s mean, 764 peak**
 robot-to-operator and **64 kbit/s mean, 104 peak** the other way. Hence
-`uplink_bitrate: 1M` and `downlink_bitrate: 300k`. That is what one robot's
+`uplink_bitrate: 1.5M` (deliberately about twice the measured rate — testing
+high is the safe direction to be wrong in) and `downlink_bitrate: 300k`. That is what one robot's
 camera settings produced over 37 seconds, not a Formant specification —
 re-measure if the resolution or frame rate changes.
 
@@ -201,9 +202,10 @@ Specifically open:
   connectors couple plenty of RF, so every configuration looked alike. Do not
   write this down as established.
 - The camera's real capabilities (`scripts/probe_camera.sh`).
-- The Dallas server does not exist yet. `server/README.md` has the whole
-  recipe: it hosts both the report receiver and the authenticated iperf3
-  server, on Vultr or Linode (bundled transfer, not per-GB egress).
+- The Dallas server does not exist yet. `server/setup.sh` provisions the whole
+  thing in one command on a fresh Vultr or Linode box (bundled transfer, not
+  per-GB egress) — receiver, TLS via Caddy, and both authenticated iperf3
+  servers. It needs a domain name pointed at the box first.
 - Whether the measured teleop bitrate holds across robots and camera
   settings. One session was measured; the config is set from it.
 - Whether the closed Apache 2800 case overheats. An hour on the bench checking
