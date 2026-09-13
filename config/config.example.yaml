@@ -155,10 +155,15 @@ udp_load:
   # server runs one test at a time, so the two directions cannot share one.
   uplink_enabled: true
   uplink_port: 5201
-  # Set from what a real Formant session sends — read it in the operator's
-  # browser at chrome://webrtc-internals, inbound-rtp video. 2M is a
-  # PLACEHOLDER, not a measurement.
-  uplink_bitrate: 2M
+  # MEASURED from a live Formant teleop session, 2026-09-12: the robot sent
+  # 645 kbit/s mean, 672 median, 764 peak over a 37-second window. 1M sits
+  # just above the peak, so a spot that carries this carries a real session
+  # with room to spare.
+  #
+  # Note this is not a Formant *specification*, it is what one session with
+  # one robot's camera settings actually used. Re-measure if the video
+  # resolution or frame rate changes.
+  uplink_bitrate: 1M
   # Seconds per block. Shorter recovers readings sooner after a dead spot;
   # longer spends less time re-establishing the test.
   uplink_block_s: 30
@@ -168,8 +173,13 @@ udp_load:
   # receiving end here, so these readings arrive live, once a second.
   downlink_enabled: true
   downlink_port: 5202
-  # The operator's outbound rate, which is mostly control and telemetry.
-  # Also a placeholder.
+  # The operator sent 64 kbit/s mean, 104 peak in the same session — this is
+  # control and telemetry, and it is tiny.
+  #
+  # 300k rather than ~150k on purpose. Loss is counted in whole datagrams, so
+  # at 1200 bytes a 150 kbit/s stream is only ~15 packets a second and a single
+  # loss reads as 6.7%. 300k roughly doubles the resolution for an amount of
+  # traffic that is still negligible next to the uplink.
   downlink_bitrate: 300k
 
 # ----------------------------------------------------------------------------

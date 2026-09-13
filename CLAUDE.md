@@ -54,12 +54,19 @@ for nothing and competes with the publisher sending the last run's clips, and
 left running through a pause it contradicts what Pause means. The runner starts
 and stops it alongside the camera, for the same reasons.
 
-**`udp_load` bitrates are placeholders, not measurements.** The point of that
-test is to load the link the way a real Formant session does; at the wrong rate
-it measures a link nobody will ask for. `uplink_bitrate: 2M` and
-`downlink_bitrate: 300k` are guesses pending real figures read off a live
-session in `chrome://webrtc-internals`. Do not let them harden into
-requirements.
+**`udp_load` bitrates are measured, not guessed — but from one session.** A
+live Formant teleop session on 2026-09-12 sent **645 kbit/s mean, 764 peak**
+robot-to-operator and **64 kbit/s mean, 104 peak** the other way. Hence
+`uplink_bitrate: 1M` and `downlink_bitrate: 300k`. That is what one robot's
+camera settings produced over 37 seconds, not a Formant specification —
+re-measure if the resolution or frame rate changes.
+
+**Formant carries everything over WebRTC data channels, not media tracks.**
+There is no `inbound-rtp` or `outbound-rtp` anywhere in a session dump, which
+is why the bitrate cannot be read from the usual video stats and why Chrome's
+task manager does not show it either. Read it from the **candidate-pair**
+`[bytesReceived_in_bits/s]` / `[bytesSent_in_bits/s]` series in a
+webrtc-internals dump.
 
 **Uplink is the half that matters most, and it cannot be measured at the rig.**
 The robot *sends* video, so the heavy stream leaves the garage — and cellular
@@ -197,9 +204,8 @@ Specifically open:
 - The Dallas server does not exist yet. `server/README.md` has the whole
   recipe: it hosts both the report receiver and the authenticated iperf3
   server, on Vultr or Linode (bundled transfer, not per-GB egress).
-- What bitrates a real Formant session uses, each way. Until those are known
-  the UDP load test has no meaningful setting and stays off. Read them in the
-  operator's browser at `chrome://webrtc-internals`.
+- Whether the measured teleop bitrate holds across robots and camera
+  settings. One session was measured; the config is set from it.
 - Whether the closed Apache 2800 case overheats. An hour on the bench checking
   `vcgencmd measure_temp` answers it; nobody has run it.
 - Dead-zone thresholds are invented — `deadzone.provisional: true` (80% loss or

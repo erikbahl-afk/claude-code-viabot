@@ -74,6 +74,9 @@ see the commit for 2026-09-11.
 | **Power** | `throttled=0x0` — clean, no undervoltage since boot. Measured on mains-adjacent conditions, not mid-walk. |
 | **Uplink** | Router 0.4 ms; 8.8.8.8 at 40–57 ms, 0% loss. Egress address is in T-Mobile space. |
 | **The modem** | A **Quectel EP06-A** — LTE Cat 6, *not* 5G, whatever LuCI's "Protocol: 5G" interface label says. The next hop past the router is 192.168.225.1, the Quectel factory default, consistent with it doing its own NAT. |
+| **Teleop bitrate** | **Measured 2026-09-12** from a live session (`webrtc_internals_dump`, 37 s window): robot → operator **645 kbit/s mean, 672 median, 744 p95, 764 peak**; operator → robot **64 mean, 104 peak**. Hence `uplink_bitrate: 1M`, `downlink_bitrate: 300k`. One robot, one set of camera settings — not a Formant specification. |
+| **How Formant carries media** | Over **WebRTC data channels**, not RTP media tracks. A session dump contains no `inbound-rtp`/`outbound-rtp` at all; the five channels are `heartbeat` (50 msg/s out), `stream.latest-try-once` (18 msg/s in — this is the video), `stream.reliable`, `stream.latest-ttl`, `stream.latest-reliable`. This is why the bitrate is invisible to the usual video stats and to Chrome's task manager, and why it has to be read from the candidate-pair byte-rate series. |
+| **The session relays through TURN** | The succeeded candidate pair was `relay` via **54.244.51.63** — Twilio's TURN edge, in AWS us-west-2 — with a mean round trip of **116 ms**. Media is not peer-to-peer. The robot's real first hop is therefore garage → carrier → Twilio edge, which is the leg the rig's uplink test models. |
 | **The SIM's data plan** | **Unlimited** (Erik, 2026-09-12). Data volume is therefore not a constraint on what the rig measures. Time and link capacity still are: a 250 MB video upload over a weak cellular link takes as long as it takes. |
 | **Signal metrics** | Working on the rig, verified 2026-09-12: `client: "at_ssh"` returned LTE band 12, cell 1452806, RSRP −100, RSRQ −12, SINR 11, RSSI −73 within seconds of a restart. The router has no modem API at all — `/ubus` 404s, there is no LuCI RPC, and `ubus list` carries no modem object. The readings come from `AT+QENG="servingcell"` on `/dev/ttyUSB2`, over SSH from the Pi. `AT+QRSRP` is unsupported on this firmware. See [ROUTER.md](ROUTER.md). |
 
@@ -96,12 +99,6 @@ not discriminate. Indoors the ambient signal is strong (RSSI −77) and a bare
 connector couples enough RF for the modem to camp regardless, so every
 configuration looked alike and consecutive rounds contradicted each other.
 Treat the MAIN/DIV assignment as unknown.
-
-**What bitrate a real Formant teleop session uses.** This is now the number
-that decides what the UDP load test means. Measuring at the wrong rate measures
-a link nobody will ask for — a garage could fail a 25 Mbit/s test and carry
-teleop perfectly. `udp_load.bitrate` currently says `1.5M`, which is a
-placeholder and explicitly not a measurement. Ask Formant.
 
 **How many levels each garage has.**
 
