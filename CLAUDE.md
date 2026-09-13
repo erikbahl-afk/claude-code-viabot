@@ -43,8 +43,44 @@ purpose.
 pinned with `-I eth0`. Anything new that measures the uplink must pin it too, or
 it will silently measure the wrong interface.
 
-**Don't enable iperf3 by default.** It is the only thing that spends cellular
-data, and the SIM's plan is unknown. Tests assert it ships disabled.
+**Don't enable iperf3 or `udp_load` by default.** The SIM is unlimited, so this
+is no longer about the data bill — they ship disabled because neither has a
+server to talk to yet and `udp_load` has no meaningful bitrate until Formant
+supplies one. Tests assert both ship disabled.
+
+**`udp_load` runs only during an active, unpaused run.** It is a deliberate
+continuous load on the uplink: left running between walks it spends the link
+for nothing and competes with the publisher sending the last run's clips, and
+left running through a pause it contradicts what Pause means. The runner starts
+and stops it alongside the camera, for the same reasons.
+
+**`udp_load` bitrates are measured, not guessed — but from one session.** A
+live Formant teleop session on 2026-09-12 sent **645 kbit/s mean, 764 peak**
+robot-to-operator and **64 kbit/s mean, 104 peak** the other way. Hence
+`uplink_bitrate: 1.5M` (deliberately about twice the measured rate — testing
+high is the safe direction to be wrong in) and `downlink_bitrate: 300k`. That is what one robot's
+camera settings produced over 37 seconds, not a Formant specification —
+re-measure if the resolution or frame rate changes.
+
+**Formant carries everything over WebRTC data channels, not media tracks.**
+There is no `inbound-rtp` or `outbound-rtp` anywhere in a session dump, which
+is why the bitrate cannot be read from the usual video stats and why Chrome's
+task manager does not show it either. Read it from the **candidate-pair**
+`[bytesReceived_in_bits/s]` / `[bytesSent_in_bits/s]` series in a
+webrtc-internals dump.
+
+**Uplink is the half that matters most, and it cannot be measured at the rig.**
+The robot *sends* video, so the heavy stream leaves the garage — and cellular
+uplink is the weaker direction, so measuring only downlink flatters every
+garage. iperf3 reports jitter and loss only at the receiving end, which for
+uplink is the server: hence blocks, `--get-server-output`, and
+`storage.backfill_samples` writing the readings onto the seconds they cover
+afterwards. Do not "simplify" that into a live reading; there isn't one.
+
+**`udp_load.datagram_bytes` must stay at 1200.** iperf3 defaults to 32 KB UDP
+datagrams, which IP fragments into two dozen packets — lose any one and the
+whole datagram counts lost, so loss reads several times worse than a real
+video packet would see, and every garage looks terrible.
 
 **The drawtext escaping is not a typo.** `ESCAPED_COLON` in `workers/camera.py`
 is two backslashes because a filtergraph is unescaped twice on the way in. One
@@ -81,6 +117,25 @@ to the phone; the screen is small and he is walking.
 still cheerfully reporting connection quality, and the entire walk is wasted.
 It gets a health chip *and* a full-width alert.
 
+**Uploading during a walk would poison the walk.** The publisher sends over
+the same cellular link the survey is measuring, so it idles while a run is
+active and resumes afterwards. `PublisherWorker.busy` is what enforces this;
+anything new that talks to the network needs the same treatment.
+
+**Publishing assumes the power will be cut.** A customer may switch the rig off
+the moment a walk ends, or halfway through a 60 MB clip. The upload queue is in
+SQLite, progress is recorded per chunk, and a resume always asks the receiver
+how many bytes it holds rather than trusting the local number — power can be
+cut between a chunk landing and the rig learning that it did. Do not "optimise"
+that HEAD away. `tests/test_publish.py` interrupts real transfers to a real
+server; keep it that way, because nothing else catches this class of bug.
+
+**Enabling `udp_load` moves the headline number.** Dead zones are detected
+from ping, ping runs continuously, and with the load test active ping is
+measuring a loaded link rather than an idle one. More dead zones will be found
+in the same garage. Runs from before and after are not comparable, and the
+thresholds were conceived for an idle link — see `docs/UNVERIFIED.md`.
+
 **Pause means "this time did not happen".** It stops measuring and recording
 both, so paused seconds leave no samples and no video. That is what makes the
 headline percentage meaningful, since it is a percentage of time and there is no
@@ -94,7 +149,11 @@ indoor positioning. Do not make Pause merely cosmetic.
 | `viabot_survey/deadzones.py` | Detect dead zones from stored samples; cut a clip per zone |
 | `viabot_survey/app.py` | Flask: captive portal, API, report building |
 | `viabot_survey/workers/` | One file per measurement source, all subclass `base.Worker` |
+| `viabot_survey/report.py` | Builds a run's result and renders it as the published page |
+| `viabot_survey/workers/udpload.py` | Jitter and loss under teleop-sized UDP streams, both directions — the load case ping cannot see |
+| `viabot_survey/publish.py` | Resumable upload client; the receiver's byte count is the authority |
 | `viabot_survey/storage.py` | SQLite; add columns to `SAMPLE_COLUMNS` when extending `samples` |
+| `server/viabot_receiver.py` | The cloud side: accepts uploads, serves reports. Deployed separately, not on the rig |
 | `viabot_survey/router_client.py` | Modem stats. `AtOverSshRouterClient` is the one that works here: SSH to the router, AT to the modem. `normalize_signal` matches field names across firmwares for the HTTP clients |
 | `scripts/setup.sh`, `setup_ap.sh` | Provisioning; both idempotent, both re-runnable |
 | `config/config.example.yaml` | The default layer *and* the documentation for every setting |
@@ -106,14 +165,15 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 127 tests, no camera or rig needed
+.venv/bin/python -m pytest        # 211 tests, no camera or rig needed
 ```
 
 Most of the suite runs anywhere: workers are tested through their parsing and
 command-building functions rather than by invoking `ping`/`ffmpeg`/`iperf3`.
 Keep it that way for new tests.
 
-The exceptions are marked `requires_ffmpeg` and skip when it is absent. They
+The exceptions are marked `requires_ffmpeg` / `requires_iperf3` and skip when
+the binary is absent. They
 exist because the two bugs that actually reached the rig — a filtergraph ffmpeg
 would not parse, and clip cutting that had never run — were both invisible to
 mocks. If you are changing the camera or clip code, install ffmpeg first
@@ -142,7 +202,14 @@ Specifically open:
   connectors couple plenty of RF, so every configuration looked alike. Do not
   write this down as established.
 - The camera's real capabilities (`scripts/probe_camera.sh`).
-- No iperf3 server exists yet; Erik plans to stand one up.
+- The Dallas server does not exist yet. `server/setup.sh` provisions the whole
+  thing in one command on a fresh Vultr or Linode box (bundled transfer, not
+  per-GB egress) — receiver, TLS via Caddy, and both authenticated iperf3
+  servers. It needs a domain name pointed at the box first.
+- Whether the measured teleop bitrate holds across robots and camera
+  settings. One session was measured; the config is set from it.
+- Whether the closed Apache 2800 case overheats. An hour on the bench checking
+  `vcgencmd measure_temp` answers it; nobody has run it.
 - Dead-zone thresholds are invented — `deadzone.provisional: true` (80% loss or
   1500 ms, sustained 5 s). The plan is to set them from one real survey walk.
   Do not quietly treat the current numbers as requirements. A finished run can

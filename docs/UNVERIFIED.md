@@ -74,6 +74,10 @@ see the commit for 2026-09-11.
 | **Power** | `throttled=0x0` — clean, no undervoltage since boot. Measured on mains-adjacent conditions, not mid-walk. |
 | **Uplink** | Router 0.4 ms; 8.8.8.8 at 40–57 ms, 0% loss. Egress address is in T-Mobile space. |
 | **The modem** | A **Quectel EP06-A** — LTE Cat 6, *not* 5G, whatever LuCI's "Protocol: 5G" interface label says. The next hop past the router is 192.168.225.1, the Quectel factory default, consistent with it doing its own NAT. |
+| **Teleop bitrate** | **Measured 2026-09-12** from a live session (`webrtc_internals_dump`, 37 s window): robot → operator **645 kbit/s mean, 672 median, 744 p95, 764 peak**; operator → robot **64 mean, 104 peak**. Hence `uplink_bitrate: 1M`, `downlink_bitrate: 300k`. One robot, one set of camera settings — not a Formant specification. |
+| **How Formant carries media** | Over **WebRTC data channels**, not RTP media tracks. A session dump contains no `inbound-rtp`/`outbound-rtp` at all; the five channels are `heartbeat` (50 msg/s out), `stream.latest-try-once` (18 msg/s in — this is the video), `stream.reliable`, `stream.latest-ttl`, `stream.latest-reliable`. This is why the bitrate is invisible to the usual video stats and to Chrome's task manager, and why it has to be read from the candidate-pair byte-rate series. |
+| **The session relays through TURN** | The succeeded candidate pair was `relay` via **54.244.51.63** — Twilio's TURN edge, in AWS us-west-2 — with a mean round trip of **116 ms**. Media is not peer-to-peer. The robot's real first hop is therefore garage → carrier → Twilio edge, which is the leg the rig's uplink test models. |
+| **The SIM's data plan** | **Unlimited** (Erik, 2026-09-12). Data volume is therefore not a constraint on what the rig measures. Time and link capacity still are: a 250 MB video upload over a weak cellular link takes as long as it takes. |
 | **Signal metrics** | Working on the rig, verified 2026-09-12: `client: "at_ssh"` returned LTE band 12, cell 1452806, RSRP −100, RSRQ −12, SINR 11, RSSI −73 within seconds of a restart. The router has no modem API at all — `/ubus` 404s, there is no LuCI RPC, and `ubus list` carries no modem object. The readings come from `AT+QENG="servingcell"` on `/dev/ttyUSB2`, over SSH from the Pi. `AT+QRSRP` is unsupported on this firmware. See [ROUTER.md](ROUTER.md). |
 
 ## Never established at all
@@ -96,7 +100,90 @@ connector couples enough RF for the modem to camp regardless, so every
 configuration looked alike and consecutive rounds contradicted each other.
 Treat the MAIN/DIV assignment as unknown.
 
-**Which garages are in scope**, how many levels, or what prompted the project.
+**How many levels each garage has.**
+
+## Known limitations of the method
+
+Not bugs — consequences of what this rig is, worth stating so nobody discovers
+them from a surprising number.
+
+**Turning on `udp_load` will change the headline percentage.** Ping runs
+continuously and is what dead zones are detected from. With the load test
+active, ping is measuring a link that is carrying a teleop-sized stream rather
+than an idle one, so loss and latency will be worse and more dead zones will be
+found — in the same garage. That is arguably the more honest number, but it
+means **results from before and after enabling it are not comparable**, and the
+thresholds were conceived for an idle link. Set thresholds after deciding
+whether the load test is on, not before.
+
+**The percentage is only as good as the operator's discipline.** It is a share
+of time, not of floor area, so it holds only if the walk is at a steady pace
+and paused whenever standing still. A customer operating the rig who does not
+pause while chatting in a good spot will inflate the result, and nothing in the
+software can detect that — there is no positioning and no motion sensor.
+
+**Nothing says which level a dead zone was on.** Correlation is by timestamp to
+video, so the level is whatever the footage shows. Manual marking was
+explicitly rejected, and this is the cost of that.
+
+**Nothing prunes old surveys.** A 30-minute walk leaves roughly 250 MB of
+video. The card is 107 GB, so around 400 walks fill it. The failure is at least
+loud rather than silent: the camera refuses to record below its disk floor and
+says so on the dashboard. `DELETE /api/runs/<id>` now removes a run's video,
+clips and report along with its rows.
+
+**A clock step mid-run would corrupt the timeline.** The Pi has no RTC. The run
+start warns when the clock is unsynchronised, but nothing watches for NTP
+stepping it *during* a walk. A backward step would put samples out of order and
+break video correlation for everything after it.
+
+**The rig carries plaintext secrets in public.** `config/config.yaml` holds the
+Wi-Fi passphrase, the router password, and — once publishing is on — the upload
+token and the iperf3 password. The card is not encrypted and the rig is carried
+through public car parks. Treat a lost rig as all of those being disclosed, and
+rotate them.
+
+## What the project is actually for
+
+From the case-and-network addendum, and worth having written down because it
+changes what counts as a good measurement:
+
+- The rig exists to decide whether a location can support **robot teleoperation
+  through Formant.io**, with human operators in **California and/or India**.
+- Formant's path is **WebRTC, so UDP**. Carriers shape UDP differently from TCP
+  and drop it first under contention, which is why a TCP speed test can pass
+  somewhere teleop will not work. Hence `udp_load`.
+- Twilio's network diagnostic tool was investigated as a way to test this and
+  **rejected** for four independent reasons: it is a browser tool needing
+  Twilio NTS credentials Formant customers do not get; headless Chromium on
+  ARM64 has documented WebRTC problems; it has no API or scripted mode; and it
+  would only ever test the hop to the nearest Twilio edge, not the path to a
+  distant operator.
+- The garages in scope are in **Florida, San Diego, the Bay Area, El Paso,
+  North Carolina and Virginia** — which is the argument for one central test
+  server rather than a local one.
+
+Still nobody has said what "good enough" means numerically. The dead-zone
+thresholds remain invented.
+
+## The enclosure
+
+Chosen: **Harbor Freight Apache 2800** ($29.99), interior 11.9 × 9 × 5.3 in,
+pick-and-pull foam. Components secured by cutting slits in the foam and zip-tying
+through them.
+
+**Overheating is a live concern, not a hypothetical one.** Foam insulates, and a
+closed case has no airflow. The two parts that matter are the cellular modem —
+which works hardest and hottest exactly when signal is weak, which is the
+condition the survey is there to characterise — and the Li-ion pack, where it is
+a safety question rather than a performance one. The agreed plan: run unlatched
+during a survey, treat closed-and-latched as transport only, route the foam
+channels so the Pi's fan exhaust and the router's vents reach an opening, and
+add vent holes with mesh only if needed.
+
+**Not yet validated.** The plan is an hour on the bench with the rig assembled
+and closed, checking `vcgencmd measure_temp` periodically, before trusting it in
+a garage. That has not been done.
 
 ## Things that are known
 

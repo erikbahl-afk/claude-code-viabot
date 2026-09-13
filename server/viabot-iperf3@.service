@@ -1,0 +1,35 @@
+# iperf3 server for the survey rigs, one instance per port.
+#
+#   sudo systemctl enable --now viabot-iperf3@5201   # uplink tests
+#   sudo systemctl enable --now viabot-iperf3@5202   # downlink tests
+#
+# Two instances because one iperf3 server runs one test at a time, and the rig
+# measures both directions at once — a teleop session is asymmetric, and the
+# two halves fail differently.
+#
+# Authentication is not optional. This port is reachable from the whole
+# internet — it has to be, because the rig arrives from a different carrier
+# address every walk — and an open iperf3 server is a bandwidth allowance that
+# anyone who finds it can spend.
+[Unit]
+Description=iperf3 server for ViaBot coverage surveys (port %i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=viabot
+Group=viabot
+ExecStart=/usr/bin/iperf3 --server --port %i \
+  --rsa-private-key-path /etc/viabot/iperf3_private.pem \
+  --authorized-users-path /etc/viabot/iperf3_users.csv
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

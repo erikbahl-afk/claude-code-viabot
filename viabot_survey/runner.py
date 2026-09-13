@@ -11,16 +11,21 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
-from . import deadzones, sysinfo
+from . import deadzones, report, sysinfo
 from .config import Config, redact
+from .publish import PublishClient
 from .router_client import build_client
 from .storage import Storage
+from .workers import camera as camera_worker
 from .workers import CameraWorker, DnsWorker, Iperf3Worker, PingWorker, RouterWorker
+from .workers.publisher import PublisherWorker
+from .workers.udpload import DOWNLINK, UPLINK, UdpLoadWorker
 
 log = logging.getLogger(__name__)
 
@@ -105,6 +110,9 @@ class SurveyRunner:
             direction=config["iperf3"]["direction"],
             streams=config["iperf3"]["streams"],
             run_data_budget_mb=config["iperf3"]["run_data_budget_mb"],
+            username=config["iperf3"]["username"],
+            password=config["iperf3"]["password"],
+            public_key_path=config["iperf3"]["public_key_path"],
             enabled=config["iperf3"]["enabled"],
             on_result=self._on_throughput,
             on_event=self._worker_event("iperf3"),
@@ -114,6 +122,39 @@ class SurveyRunner:
             interval_s=config["router"]["interval_s"],
             on_event=self._worker_event("router"),
         )
+        # A teleop session is asymmetric, so it takes two of these. Uplink
+        # carries the robot's video and is usually the weaker half; downlink
+        # carries the operator's commands and is small but not optional.
+        load = config["udp_load"]
+        common = dict(
+            server=load["server"],
+            datagram_bytes=load["datagram_bytes"],
+            run_data_budget_mb=load["run_data_budget_mb"],
+            username=load["username"],
+            password=load["password"],
+            public_key_path=load["public_key_path"],
+        )
+        self.udp_up = UdpLoadWorker(
+            direction=UPLINK,
+            port=load["uplink_port"],
+            bitrate=load["uplink_bitrate"],
+            block_s=load["uplink_block_s"],
+            # Uplink loss can only be seen at the far end, so it arrives after
+            # the samples it describes were written.
+            on_backfill=self._backfill_uplink,
+            enabled=bool(load["enabled"]) and bool(load["uplink_enabled"]),
+            on_event=self._worker_event("udp_up"),
+            **common,
+        )
+        self.udp_down = UdpLoadWorker(
+            direction=DOWNLINK,
+            port=load["downlink_port"],
+            bitrate=load["downlink_bitrate"],
+            enabled=bool(load["enabled"]) and bool(load["downlink_enabled"]),
+            on_event=self._worker_event("udp_down"),
+            **common,
+        )
+        self.udp_load = [self.udp_up, self.udp_down]
         self.camera = CameraWorker(
             device=config["camera"]["device"],
             width=config["camera"]["width"],
@@ -126,7 +167,26 @@ class SurveyRunner:
             enabled=config["camera"]["enabled"],
             on_event=self._worker_event("camera"),
         )
-        self.workers = [self.ping, self.dns, self.iperf, self.router, self.camera]
+        publish = config["publish"]
+        self.publisher = PublisherWorker(
+            client=PublishClient(
+                base_url=publish["url"],
+                token=publish["token"],
+                chunk_bytes=publish["chunk_bytes"],
+                timeout=publish["timeout_s"],
+            ),
+            storage=storage,
+            # A survey must never compete with its own upload for the link it
+            # is measuring, so the queue idles for the length of a walk.
+            busy=lambda: self.active_run_id is not None,
+            report_for=self._report_bundle,
+            assemble_video=self.assemble_full_video,
+            interval_s=publish["interval_s"],
+            enabled=bool(publish["enabled"]) and bool(publish["url"]),
+            on_event=self._worker_event("publisher"),
+        )
+        self.workers = [self.ping, self.dns, self.iperf, self.router,
+                        *self.udp_load, self.camera, self.publisher]
 
     # -- events --------------------------------------------------------------
 
@@ -158,8 +218,13 @@ class SurveyRunner:
         """Start the always-on workers and the sampling loop."""
         self._stop.clear()
         for worker in self.workers:
-            if worker is self.camera:
-                continue  # the camera only records during a run
+            if worker is self.camera or worker in self.udp_load:
+                # Both only run during a walk. The camera for the obvious
+                # reason; the UDP load test because it is a deliberate,
+                # continuous load on the uplink — left running between walks it
+                # would burn the link for nothing and fight the publisher for
+                # the same uplink while it is trying to send the last run.
+                continue
             worker.start()
         self._sampler = threading.Thread(target=self._sample_loop, name="sampler",
                                          daemon=True)
@@ -260,6 +325,13 @@ class SurveyRunner:
                     "may be off", level="warning", source="runner", run_id=run_id)
 
             self.iperf.reset_run_budget()
+            # A fresh walk gets a fresh data allowance. The UDP load test is by
+            # far the most expensive thing the rig does on cellular, so its
+            # ceiling is per-run rather than per-lifetime.
+            for worker in self.udp_load:
+                worker.begin_run()
+                if worker.enabled:
+                    worker.start()
             if self.camera.enabled:
                 self.camera.set_output_dir(video_dir)
                 self.camera.start()
@@ -278,6 +350,8 @@ class SurveyRunner:
 
         segments = self.camera.segments()
         self.camera.stop()
+        for worker in self.udp_load:
+            worker.stop()
         self.camera.output_dir = None
         self.storage.end_run(run["id"])
         self.storage.add_event(f"run {run['id']} stopped", source="runner",
@@ -341,7 +415,124 @@ class SurveyRunner:
         self.storage.add_event(message, source="runner", run_id=run_id)
         self._wrapup = {"run_id": run_id, "summary": summary,
                         "zones": [z.as_dict() for z in zones]}
+        try:
+            self.queue_for_publishing(run_id)
+        except Exception:  # noqa: BLE001 - publishing must never lose a result
+            log.exception("could not queue %s for publishing", run_id)
+            self.storage.add_event(
+                "the run was analysed but could not be queued for upload; "
+                "its report and clips are still on the rig",
+                level="warning", source="publisher", run_id=run_id)
         return self._wrapup
+
+    # -- publishing ----------------------------------------------------------
+
+    def _report_bundle(self, run_id: str) -> tuple[Path, dict]:
+        """Where a run's publishable files are built, and the report itself."""
+        run = self.storage.get_run(run_id)
+        built = report.build_report(self.storage, run) if run else {}
+        return Path(self.config.data_dir) / "reports" / run_id, built
+
+    def queue_for_publishing(self, run_id: str) -> int:
+        """Write the report and hand the whole bundle to the upload queue.
+
+        Queued, not uploaded: the rig may be underground with no usable link,
+        or about to be switched off. Everything here is durable, so whenever
+        the rig next has power and is not walking, it carries on.
+        """
+        if not self.config["publish"]["enabled"]:
+            return 0
+        bundle_dir, built = self._report_bundle(run_id)
+        if not built:
+            return 0
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+
+        page = bundle_dir / "index.html"
+        page.write_text(report.render_html(
+            built, deadzone_config=self.config["deadzone"]), encoding="utf-8")
+        self.storage.enqueue_upload(run_id, "report", str(page), "index.html",
+                                    page.stat().st_size)
+        queued = 1
+
+        for zone in built.get("dead_zones") or []:
+            clip = zone.get("clip_path")
+            if not clip or not Path(clip).exists():
+                continue
+            name = Path(clip).name
+            self.storage.enqueue_upload(run_id, "clip", clip, f"clips/{name}",
+                                        Path(clip).stat().st_size)
+            queued += 1
+
+        # The whole walk is several hundred megabytes against a few tens for
+        # the clips, over a metered link, so it waits to be asked for. It is
+        # not even assembled until then.
+        if self.config["publish"]["offer_full_video"]:
+            self.storage.enqueue_upload(
+                run_id, "video", str(bundle_dir / "full.mp4"), "video/full.mp4",
+                None, held=True)
+
+        self.storage.add_event(f"queued {queued} file(s) for upload",
+                               source="publisher", run_id=run_id)
+        return queued
+
+    def discard_run(self, run_id: str) -> dict[str, Any]:
+        """Delete a run and everything it left on the card.
+
+        Deleting the database rows alone would free a few hundred kilobytes and
+        leave a few hundred megabytes: the video is the bulk of a survey, and
+        the card filling is what stops the *next* walk from recording.
+        """
+        removed = []
+        for directory in (self.config.video_dir / run_id,
+                          Path(self.config.data_dir) / "clips" / run_id,
+                          Path(self.config.data_dir) / "reports" / run_id):
+            if directory.is_dir():
+                freed = sum(f.stat().st_size for f in directory.rglob("*") if f.is_file())
+                shutil.rmtree(directory, ignore_errors=True)
+                removed.append({"path": str(directory),
+                                "freed_mb": round(freed / 1024 ** 2, 1)})
+        self.storage.delete_run(run_id)
+        return {"deleted": run_id, "removed": removed,
+                "freed_mb": round(sum(r["freed_mb"] for r in removed), 1)}
+
+    def assemble_full_video(self, run_id: str, out_path: Path) -> None:
+        """Join the run's segments into one file, without re-encoding.
+
+        Built only when somebody asks for it. Stream-copied, so it costs disk
+        and a little I/O rather than an hour of the Pi's CPU.
+        """
+        video_dir = self.config.video_dir / run_id
+        segments = _segments_on_disk(video_dir)
+        if not segments:
+            raise FileNotFoundError(f"no video segments for {run_id}")
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Joining the segments writes a second copy of the entire walk. The
+        # camera refuses to record below a disk floor, but this path would walk
+        # straight past it and fill the card — and the first thing that breaks
+        # then is recording the *next* survey.
+        needed_mb = sum((video_dir / name).stat().st_size
+                        for name, _ in segments) / 1024 ** 2
+        floor_mb = float(self.config["camera"]["min_free_disk_mb"])
+        free_mb = camera_worker.free_disk_mb(out_path.parent)
+        if free_mb < needed_mb + floor_mb:
+            raise RuntimeError(
+                f"not enough disk to join this walk: it needs {needed_mb:.0f} MB "
+                f"plus a {floor_mb:.0f} MB floor, and {free_mb:.0f} MB is free")
+        listing = out_path.with_suffix(".txt")
+        listing.write_text("".join(
+            f"file '{(video_dir / name).resolve()}'\n" for name, _ in segments))
+        try:
+            deadzones._ffmpeg(["-f", "concat", "-safe", "0", "-i", str(listing),
+                               "-c", "copy", str(out_path)], timeout=1800)
+        finally:
+            listing.unlink(missing_ok=True)
+        if not out_path.exists() or out_path.stat().st_size == 0:
+            out_path.unlink(missing_ok=True)
+            raise RuntimeError("ffmpeg produced no video")
+        self.storage.enqueue_upload(run_id, "video", str(out_path),
+                                    "video/full.mp4", out_path.stat().st_size)
 
     @property
     def active_run_id(self) -> str | None:
@@ -368,6 +559,12 @@ class SurveyRunner:
             self._paused = True
             run_id = self._run["id"]
         self.camera.stop()
+        # Pause means this time did not happen, so the load stops with the
+        # recording. Leaving it streaming would also spend the uplink while
+        # the operator is standing still, which is exactly the time it tells
+        # you nothing about.
+        for worker in self.udp_load:
+            worker.stop()
         self._dead_streak_s = 0.0
         self.storage.add_event("run paused", source="runner", run_id=run_id)
         return True
@@ -384,6 +581,9 @@ class SurveyRunner:
             # clock, so correlation still holds across the gap.
             self.camera.set_output_dir(video_dir)
             self.camera.start()
+        for worker in self.udp_load:
+            if worker.enabled:
+                worker.start()
         self.storage.add_event("run resumed", source="runner", run_id=run_id)
         return True
 
@@ -422,6 +622,10 @@ class SurveyRunner:
         status = classify(loss, rtt, self.config["thresholds"], self._dead_streak_s)
         dns = self.dns.snapshot() if self.dns.enabled else {}
         signal = self.router.sample_fields() if self.router.enabled else {}
+        under_load: dict[str, Any] = {}
+        for worker in self.udp_load:
+            if worker.enabled:
+                under_load.update(worker.sample_fields())
         undervoltage = self._check_power()
 
         sample: dict[str, Any] = {
@@ -434,6 +638,7 @@ class SurveyRunner:
             "dead_streak_s": round(self._dead_streak_s, 1),
             "undervoltage": undervoltage,
             **signal,
+            **under_load,
         }
         self._last_sample = sample
 
@@ -450,8 +655,25 @@ class SurveyRunner:
                 video_file=video_file, video_offset_s=offset,
                 clock_synced=1 if sysinfo.clock_synced() else 0,
                 undervoltage=undervoltage,
-                **signal)
+                **signal, **under_load)
         return sample
+
+    def _backfill_uplink(self, readings: list) -> None:
+        """Write a finished uplink block onto the samples it covers.
+
+        Only into the run that was walking while the block ran. If the run
+        ended or was paused while it was in flight, the readings describe time
+        the report says did not happen, and are dropped.
+        """
+        with self._lock:
+            run = self._run
+            paused = self._paused
+        if not run or paused:
+            return
+        try:
+            self.storage.backfill_samples(run["id"], readings)
+        except Exception:  # noqa: BLE001 - a late measurement must never
+            log.exception("could not backfill uplink readings")   # kill a run
 
     def _track_dead_zone(self, sample: dict) -> None:
         """Count dead zones as they happen, using the same rule as the report."""

@@ -75,7 +75,10 @@ dns:
 iperf3:
   enabled: false
   server: null
-  port: 5201
+  # Its own port, deliberately not 5201 or 5202: one iperf3 server runs one
+  # test at a time, so sharing a port with udp_load means whichever starts
+  # second is told "the server is busy" and measures nothing.
+  port: 5203
   # Seconds per test.
   duration_s: 5
   # Seconds between tests.
@@ -89,18 +92,102 @@ iperf3:
   # Hard ceiling on cellular data per run. The worker stops launching tests
   # once a run has used this much. null = no limit.
   run_data_budget_mb: 2000
+  # Same server and the same credentials as udp_load, if both are in use.
+  username: ""
+  password: ""
+  public_key_path: ""
 
 # ----------------------------------------------------------------------------
-# Router / modem signal statistics (RSRP, RSRQ, SINR, band, cell ID).
+# Continuous UDP load — jitter and packet loss under a real teleop stream.
 #
-# This is the highest-value coverage data and costs zero cellular data, but the
-# rig's router runs custom ViaBot OpenWrt firmware whose API has not been
-# characterised yet. Run `python3 scripts/probe_router.py` on the Pi to discover
-# which endpoint works, then set `client` accordingly.
+# Everything else here measures an idle link. Ping sends 60 bytes a second and
+# finds a garage where nothing gets through; it does not find the more
+# interesting failure, which is a spot that looks fine empty and falls apart the
+# moment you put video on it. Carriers shape UDP differently from TCP and drop
+# it first under contention, so a link that passes a TCP speed test can still be
+# useless for teleoperation.
 #
-# client: "null"  — collect nothing (default, always safe)
-#         "ubus"  — OpenWrt ubus JSON-RPC over http://<router>/ubus
-#         "luci"  — legacy LuCI RPC at /cgi-bin/luci/rpc/sys
+# This holds one UDP stream open for the whole walk and records what the
+# receiving end sees every second, which is the same question the remote
+# operator is asking, asked at every point in the garage.
+#
+# This is by far the most data the rig moves — bitrate times the length of the
+# walk, so about 340 MB for a 30-minute walk at 1.5 Mbit/s. The SIM is
+# unlimited, so that is a load question rather than a cost one, but it is still
+# the reason the ceiling below exists.
+#
+# It runs only while a walk is active, and stops when the run is paused. Left
+# streaming between walks it would spend the uplink for nothing and compete
+# with the publisher sending the last run's clips.
+#
+# Needs an iperf3 server — see server/README.md, which runs one alongside the
+# report receiver on the same box.
+# ----------------------------------------------------------------------------
+udp_load:
+  enabled: false
+  server: null
+
+  # Bytes per datagram. Do not raise this. iperf3 defaults to 32 KB datagrams,
+  # which IP then fragments into two dozen packets — lose any one and the whole
+  # datagram counts lost, so loss reads several times worse than a real
+  # 1200-byte video packet would see. 1200 is what WebRTC settles on.
+  datagram_bytes: 1200
+
+  # Runaway guard, not a cost control — the SIM is unlimited. Set it well above
+  # what a real walk spends (bitrate x duration), because hitting it mid-walk
+  # stops the measurement and leaves the rest of the garage unmeasured.
+  run_data_budget_mb: 2000
+
+  # iperf3's own authentication, shared by both directions. Leave blank only
+  # for a server that cannot be reached from the internet — an open one is a
+  # bandwidth allowance anyone who finds the port can spend.
+  username: ""
+  password: ""
+  public_key_path: ""
+
+  # --- uplink: the robot's video, going out of the garage -------------------
+  # Usually the half that decides whether a spot is workable, because cellular
+  # uplink is typically the weaker direction.
+  #
+  # Only the far end can see what arrived, so this runs in blocks and asks the
+  # server what it received; the per-second readings are then written onto the
+  # samples they belong to. That is why it needs its own port: one iperf3
+  # server runs one test at a time, so the two directions cannot share one.
+  uplink_enabled: true
+  uplink_port: 5201
+  # Deliberately about twice what a real session was measured using.
+  #
+  # MEASURED from a live Formant teleop session, 2026-09-12: the robot sent
+  # 645 kbit/s mean, 672 median, 744 at the 95th, 764 peak over a 37-second
+  # window. 1.5M is 2.3x that mean and essentially twice the peak.
+  #
+  # Testing above the real rate is the safe direction to be wrong in: a spot
+  # that carries 1.5 Mbit/s certainly carries 650 kbit/s, so a garage this
+  # test passes is genuinely workable, and one it fails is worth looking at
+  # rather than dismissing. It also leaves room for a robot with a higher
+  # resolution camera than the one measured.
+  #
+  # This is not a Formant *specification* — it is what one robot's camera
+  # settings produced. Re-measure if the resolution or frame rate changes.
+  uplink_bitrate: 1.5M
+  # Seconds per block. Shorter recovers readings sooner after a dead spot;
+  # longer spends less time re-establishing the test.
+  uplink_block_s: 30
+
+  # --- downlink: the operator's commands, coming in ------------------------
+  # Small, but if it collapses the robot stops taking orders. The rig is the
+  # receiving end here, so these readings arrive live, once a second.
+  downlink_enabled: true
+  downlink_port: 5202
+  # The operator sent 64 kbit/s mean, 104 peak in the same session — this is
+  # control and telemetry, and it is tiny.
+  #
+  # 300k rather than ~150k on purpose. Loss is counted in whole datagrams, so
+  # at 1200 bytes a 150 kbit/s stream is only ~15 packets a second and a single
+  # loss reads as 6.7%. 300k roughly doubles the resolution for an amount of
+  # traffic that is still negligible next to the uplink.
+  downlink_bitrate: 300k
+
 # ----------------------------------------------------------------------------
 # ----------------------------------------------------------------------------
 # Modem signal metrics: RSRP, RSRQ, SINR, band and cell ID on every sample.
@@ -146,6 +233,42 @@ router:
   # ubus only. Set by probe_router.py once discovered.
   ubus_object: null
   ubus_method: null
+
+# ----------------------------------------------------------------------------
+# Publishing: where a finished run goes so somebody can read it.
+#
+# When a walk ends the rig writes a report page, then queues it, the dead-zone
+# clips, and (on request only) the full recording. The queue lives in the
+# database, so pulling the plug mid-upload costs one chunk rather than the run:
+# the next power-on asks the receiver how much it already has and carries on
+# from there.
+#
+# Nothing uploads while a run is in progress. The upload would travel over the
+# cellular link the survey is measuring, and would manufacture the latency and
+# loss the walk exists to record.
+#
+# The receiver is in server/ — see server/README.md to stand one up. Leave
+# `enabled: false` and the rig keeps every report locally at
+# http://192.168.50.1/api/runs/<run-id>/report.html instead.
+# ----------------------------------------------------------------------------
+publish:
+  enabled: false
+  # Base URL of the receiving server, e.g. https://surveys.example.com
+  url: ""
+  # Shared secret; must match VIABOT_RECEIVER_TOKEN on the server.
+  token: ""
+
+  # Bytes per request. Every chunk boundary is a place a power cut is free, so
+  # smaller is safer and slower. 512 KiB costs about a second of progress.
+  chunk_bytes: 524288
+  # Seconds between passes over the queue while idle.
+  interval_s: 60
+  timeout_s: 60
+
+  # Offer the full walk recording behind a button on the report rather than
+  # sending it. Clips are a few tens of megabytes; the whole walk is a few
+  # hundred, on a SIM whose plan nobody has checked.
+  offer_full_video: true
 
 # ----------------------------------------------------------------------------
 # Camera. Records continuously to local disk for later review — video is

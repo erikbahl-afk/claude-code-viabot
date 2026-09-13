@@ -185,3 +185,31 @@ def test_recovery_is_silent_when_nothing_was_interrupted(config, storage):
     finally:
         survey.shutdown()
     assert not any("cut off" in e["message"] for e in storage.recent_events())
+
+
+def test_deleting_a_run_frees_the_card_not_just_the_database(runner, storage, tmp_path):
+    """The video is the bulk of a survey. Deleting the rows alone frees a few
+    hundred kilobytes and leaves a few hundred megabytes — and a full card is
+    what stops the next walk from recording at all."""
+    run_id = "20250911-194640-level-2"
+    storage.create_run(run_id, label="Level 2")
+    storage.add_sample(run_id, 1000.0, rtt_ms=40.0)
+    storage.add_event("something happened", run_id=run_id)
+
+    from pathlib import Path
+    for directory, name in ((runner.config.video_dir / run_id, "seg.mkv"),
+                            (Path(runner.config.data_dir) / "clips" / run_id, "a.mp4"),
+                            (Path(runner.config.data_dir) / "reports" / run_id, "index.html")):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / name).write_bytes(b"x" * 4096)
+
+    result = runner.discard_run(run_id)
+
+    assert storage.get_run(run_id) is None
+    assert not (runner.config.video_dir / run_id).exists()
+    assert not (Path(runner.config.data_dir) / "clips" / run_id).exists()
+    assert not (Path(runner.config.data_dir) / "reports" / run_id).exists()
+    assert result["freed_mb"] >= 0
+    assert len(result["removed"]) == 3
+    # And nothing is left pointing at a run that no longer exists.
+    assert not [e for e in storage.recent_events(50) if e["run_id"] == run_id]
