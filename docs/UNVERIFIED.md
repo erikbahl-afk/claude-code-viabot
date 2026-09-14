@@ -108,6 +108,20 @@ Treat the MAIN/DIV assignment as unknown.
 Not bugs — consequences of what this rig is, worth stating so nobody discovers
 them from a surprising number.
 
+**A dead zone lasts longer than the dead spot does.** When the modem loses
+signal it has to re-attach when it comes back — scan, register, re-establish the
+data session — and that takes time. A crude test on 2026-09-14 (antennas wrapped
+in foil, then unwrapped) took **10–15 seconds** to recover.
+
+So a measured dead zone is the physical dead area *plus* the recovery. Walk
+through a five-metre blind spot and the report may show twenty seconds. That is
+arguably the honest number — the robot cannot work during re-acquisition either —
+but nobody should be surprised when a zone looks longer than the place that
+caused it.
+
+The 10–15 s figure is one foil test, not a characterisation. A real garage will
+say whether it holds.
+
 **Turning on `udp_load` will change the headline percentage.** Ping runs
 continuously and is what dead zones are detected from. With the load test
 active, ping is measuring a link that is carrying a teleop-sized stream rather

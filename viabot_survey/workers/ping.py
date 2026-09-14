@@ -17,7 +17,7 @@ import time
 from collections import OrderedDict
 from typing import Any
 
-from .base import STATE_DEGRADED, STATE_FAILED, Worker
+from .base import STATE_DEGRADED, STATE_FAILED, STATE_RUNNING, Worker
 
 # [1755302400.123456] 64 bytes from 8.8.8.8: icmp_seq=3 ttl=118 time=48.2 ms
 REPLY_RE = re.compile(r"icmp_seq=(\d+).*?\btime=([\d.]+)\s*ms")
@@ -188,6 +188,14 @@ class PingWorker(Worker):
             loss_pct = 100.0
             if self.state not in (STATE_FAILED,):
                 self._set_state(STATE_DEGRADED, f"no reply for {silent_for:.0f}s")
+        elif silent_for is not None and self.state == STATE_DEGRADED:
+            # Replies are flowing again, so say so. Nothing else clears this:
+            # the base class sets RUNNING once before run_once(), and ping's
+            # run_once() streams for the life of the worker and never returns.
+            # Without this the health chip latches on the first dead zone and
+            # reads "link problem" for the rest of the walk — long after the
+            # link came back — which trains the operator to ignore it.
+            self._set_state(STATE_RUNNING)
 
         return {
             "target": self.target,

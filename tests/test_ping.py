@@ -104,3 +104,40 @@ def test_old_results_are_pruned():
             f"[{now + i:.6f}] 64 bytes from 8.8.8.8: icmp_seq={i} ttl=118 time=40.0 ms")
     # Retention is a multiple of the window, so memory cannot grow without bound.
     assert len(worker._results) <= 70
+
+
+def test_the_link_chip_clears_once_replies_come_back():
+    """A dead zone makes ping go quiet, which is correct. What is not correct is
+    staying that way: the operator walks out of the dead zone, the link is fine,
+    and the phone still says there is a link problem for the rest of the walk.
+
+    Nothing else can clear it — the base class sets RUNNING once before
+    run_once(), and ping's run_once() streams for the life of the worker.
+    """
+    from viabot_survey.workers.base import STATE_DEGRADED, STATE_RUNNING
+
+    worker = PingWorker(target="8.8.8.8", interval_s=1.0, window_s=10.0)
+    now = 1_000_000.0
+
+    # A reply, then silence long enough to count as a dead link.
+    worker._results[1] = {"ts": now, "rtt": 45.0}
+    worker._last_reply_ts = now
+    worker.snapshot(now + 30)
+    assert worker.state == STATE_DEGRADED
+
+    # Out of the dead zone: replies resume.
+    worker._results[2] = {"ts": now + 31, "rtt": 48.0}
+    worker._last_reply_ts = now + 31
+    worker.snapshot(now + 32)
+    assert worker.state == STATE_RUNNING
+
+
+def test_a_worker_that_has_never_had_a_reply_is_not_called_healthy():
+    """Clearing on 'not currently silent' would report a link that has never
+    worked as fine, because there is no last reply to be silent since."""
+    from viabot_survey.workers.base import STATE_DEGRADED
+
+    worker = PingWorker(target="8.8.8.8", interval_s=1.0)
+    worker._set_state(STATE_DEGRADED, "never got a reply")
+    worker.snapshot(1_000_000.0)
+    assert worker.state == STATE_DEGRADED
