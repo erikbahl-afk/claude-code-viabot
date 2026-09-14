@@ -54,7 +54,7 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ---------------------------------------------------------------------------
 step "Packages"
 export DEBIAN_FRONTEND=noninteractive
-PACKAGES=(python3-venv python3-pip iperf3 openssl ca-certificates curl)
+PACKAGES=(python3-venv python3-pip iperf3 openssl ca-certificates curl gnupg)
 MISSING=()
 for package in "${PACKAGES[@]}"; do
   dpkg -s "$package" >/dev/null 2>&1 || MISSING+=("$package")
@@ -148,13 +148,31 @@ ok "receiver and both iperf3 servers started"
 step "TLS"
 if [[ $USE_TLS -eq 1 ]]; then
   if ! command -v caddy >/dev/null 2>&1; then
+    KEYRING=/usr/share/keyrings/caddy-stable-archive-keyring.gpg
     install -d -m 0755 /usr/share/keyrings
     curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
-      | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-    curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt \
-      | tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null
-    apt-get update -qq && apt-get install -y -qq caddy
+      | gpg --dearmor -o "$KEYRING"
+    # An empty keyring is the failure that does not announce itself: apt goes
+    # on to report the repository as unsigned, which reads like the vendor's
+    # problem rather than a missing gpg here.
+    [[ -s "$KEYRING" ]] || die "could not build $KEYRING — is gnupg installed?"
+    chmod 0644 "$KEYRING"
+
+    # The sources line is written here rather than piped from the vendor's
+    # generated file. That file's shape is theirs to change, and if it omits
+    # signed-by then apt looks in the system trust store, never sees the key
+    # just placed above, and rejects the repository as unsigned.
+    printf 'deb [signed-by=%s] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main\n' \
+      "$KEYRING" > /etc/apt/sources.list.d/caddy-stable.list
+
+    apt-get update -qq
+    apt-get install -y -qq caddy \
+      || die "caddy would not install. Check the output above; the rest of the
+    server is already set up, so fixing this and re-running is safe."
   fi
+  command -v caddy >/dev/null 2>&1 \
+    || die "caddy is not installed, so there is nothing to terminate TLS."
+  mkdir -p /etc/caddy
   cat > /etc/caddy/Caddyfile <<CADDYEOF
 # Terminates TLS and forwards to the receiver, which listens on localhost only.
 $DOMAIN {
