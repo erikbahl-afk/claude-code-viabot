@@ -11,8 +11,14 @@
 #
 # Start a survey run first. The script says so if you have not.
 #
-# Leave it running and walk away: it survives the SSH session dropping, and
-# writes a log you can read afterwards either way.
+# You will want to walk away, and the Wi-Fi you are connected over is being
+# broadcast by the thing under test. Start it detached so a dropped session
+# does not end the test an unknown number of minutes in:
+#
+#   nohup ./scripts/thermal_test.sh > thermal.out 2>&1 &
+#   tail -f thermal.out      # Ctrl-C stops watching, not the test
+#
+# It ignores SIGHUP as well, so either way the log keeps filling.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -30,6 +36,11 @@ while [[ $# -gt 0 ]]; do
     *)          die "unknown option $1" ;;
   esac
 done
+
+# The test is an hour long and is usually watched over the Pi's own Wi-Fi,
+# which means the link can drop for reasons that are part of what is being
+# measured. Losing the terminal must not lose the test.
+trap '' HUP
 
 require_cmd vcgencmd "Install libraspberrypi-bin, or run this on the Pi."
 
