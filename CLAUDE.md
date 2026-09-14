@@ -44,9 +44,10 @@ pinned with `-I eth0`. Anything new that measures the uplink must pin it too, or
 it will silently measure the wrong interface.
 
 **Don't enable iperf3 or `udp_load` by default.** The SIM is unlimited, so this
-is no longer about the data bill — they ship disabled because neither has a
-server to talk to yet and `udp_load` has no meaningful bitrate until Formant
-supplies one. Tests assert both ship disabled.
+is not about the data bill — the *example* config ships them off because a fresh
+clone has no server to talk to, and tests assert that. The rig's own
+`config/config.yaml` has `udp_load` and `publish` switched on and pointed at
+`viabotsurveys.com`.
 
 **`udp_load` runs only during an active, unpaused run.** It is a deliberate
 continuous load on the uplink: left running between walks it spends the link
@@ -203,10 +204,10 @@ Specifically open:
   connectors couple plenty of RF, so every configuration looked alike. Do not
   write this down as established.
 - The camera's real capabilities (`scripts/probe_camera.sh`).
-- The Dallas server does not exist yet. `server/setup.sh` provisions the whole
-  thing in one command on a fresh Vultr or Linode box (bundled transfer, not
-  per-GB egress) — receiver, TLS via Caddy, and both authenticated iperf3
-  servers. It needs a domain name pointed at the box first.
+- Whether a second server build goes cleanly. The first one is up and working
+  (`viabotsurveys.com`, Vultr Dallas, 2026-09-14) but it took five fixes to
+  `server/setup.sh` to get there, all of them merged. The next box is the test
+  of whether the script is actually right.
 - Whether the measured teleop bitrate holds across robots and camera
   settings. One session was measured; the config is set from it.
 - What the *modem* does thermally. The Pi is settled — an hour closed and
