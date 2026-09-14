@@ -156,6 +156,7 @@ indoor positioning. Do not make Pause merely cosmetic.
 | `server/viabot_receiver.py` | The cloud side: accepts uploads, serves reports. Deployed separately, not on the rig |
 | `viabot_survey/router_client.py` | Modem stats. `AtOverSshRouterClient` is the one that works here: SSH to the router, AT to the modem. `normalize_signal` matches field names across firmwares for the HTTP clients |
 | `scripts/setup.sh`, `setup_ap.sh` | Provisioning; both idempotent, both re-runnable |
+| `scripts/thermal_test.sh` | Does the closed case cook the Pi? Decodes `get_throttled`, which is where the answer actually lives |
 | `config/config.example.yaml` | The default layer *and* the documentation for every setting |
 
 Configuration merges in three layers: the example file, then
@@ -208,8 +209,9 @@ Specifically open:
   servers. It needs a domain name pointed at the box first.
 - Whether the measured teleop bitrate holds across robots and camera
   settings. One session was measured; the config is set from it.
-- Whether the closed Apache 2800 case overheats. An hour on the bench checking
-  `vcgencmd measure_temp` answers it; nobody has run it.
+- Whether the closed Apache 2800 case overheats. `./scripts/thermal_test.sh`
+  answers it in an hour — run it with a survey **active**, since the camera
+  encoding is most of the heat and an idle rig proves nothing.
 - Dead-zone thresholds are invented — `deadzone.provisional: true` (80% loss or
   1500 ms, sustained 5 s). The plan is to set them from one real survey walk.
   Do not quietly treat the current numbers as requirements. A finished run can

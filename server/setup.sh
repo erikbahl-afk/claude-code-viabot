@@ -168,6 +168,18 @@ $DOMAIN {
 CADDYEOF
   systemctl enable --now caddy >/dev/null
   systemctl reload caddy 2>/dev/null || systemctl restart caddy
+
+  # Undo a previous --no-tls run. That one binds the receiver to every
+  # interface because nothing is proxying for it; leaving that in place behind
+  # Caddy would keep port 8089 answering in the clear, so the TLS everyone
+  # believes is protecting the reports would be one URL away from bypassed.
+  if [[ -f /etc/systemd/system/viabot-receiver.service.d/override.conf ]]; then
+    rm -f /etc/systemd/system/viabot-receiver.service.d/override.conf
+    rmdir /etc/systemd/system/viabot-receiver.service.d 2>/dev/null || true
+    systemctl daemon-reload
+    systemctl restart viabot-receiver
+    ok "receiver moved back behind the proxy, off the public interface"
+  fi
   BASE_URL="https://$DOMAIN"
   ok "Caddy will fetch a certificate for $DOMAIN on first request"
 else
