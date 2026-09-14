@@ -131,6 +131,25 @@ means **results from before and after enabling it are not comparable**, and the
 thresholds were conceived for an idle link. Set thresholds after deciding
 whether the load test is on, not before.
 
+**How much uplink teleop really needs is not settled.** The rig's rate is set
+from one 37-second capture of one robot: 645 kbit/s mean, 764 peak, steady
+around 650-700 with a lid on it — which reads like a configured encoder target
+rather than a link being squeezed, though the dump carries no
+`availableOutgoingBitrate` to prove it. Against that, 10 Mbit/s down / 5 up has
+been quoted from memory, unsourced. Both can be true: the second is the shape of
+a *provisioning recommendation*, and would also be right for more cameras or a
+higher resolution than the one measured.
+
+This is not settled by raising the test rate. The load is constant-rate UDP
+running alongside ping, and ping is what dead zones are detected from — offer 5
+Mbit/s to a link that carries 2 and the queue fills, latency spikes, and the
+garage reads as one long dead zone. Testing high is the safe direction only up
+to the point where the test becomes the failure.
+
+What would settle it: the robot's configured camera bitrate from the Formant
+console, and `./scripts/capacity_test.sh --udp 5M` at a weak spot to find out
+whether 5 Mbit/s is even available to offer.
+
 **The throughput plot is not a speed test, and the report says so.** The rig
 holds a UDP stream open at the bitrate a teleop session really uses and records
 what arrived each second. So the plot's ceiling is the rate that was *offered*

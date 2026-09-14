@@ -38,6 +38,7 @@ downlink with video-sized traffic would measure a session nobody runs.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
@@ -46,6 +47,8 @@ import time
 from typing import Any, Callable
 
 from .base import STATE_DEGRADED, STATE_FAILED, Worker
+
+log = logging.getLogger(__name__)
 
 #: A per-second line from the receiving end, carrying jitter and loss:
 #:
@@ -87,6 +90,40 @@ FIELDS = {
     UPLINK: ("udp_up_jitter_ms", "udp_up_loss_pct", "udp_up_mbps"),
     DOWNLINK: ("udp_down_jitter_ms", "udp_down_loss_pct", "udp_down_mbps"),
 }
+
+
+def address_of(text: str) -> str | None:
+    """The IPv4 address out of `ip -o -4 addr show dev eth0` output.
+
+        3: eth0    inet 192.168.1.42/24 brd ... scope global eth0
+
+    Parsed rather than shelled out to in a test, so this can be checked
+    without the interface existing.
+    """
+    for line in text.splitlines():
+        parts = line.split()
+        if "inet" in parts:
+            candidate = parts[parts.index("inet") + 1].split("/")[0]
+            if candidate:
+                return candidate
+    return None
+
+
+def interface_address(interface: str) -> str | None:
+    """What address to bind to, or None if the interface has none right now.
+
+    iperf3's -B takes an *address*, unlike ping's -I which takes an interface
+    name — passing it "eth0" fails with "Name or service not known" and the
+    whole test never runs. The modem can also be between leases, in which case
+    there is nothing to bind to and the routing table is a better answer than
+    failing.
+    """
+    try:
+        out = subprocess.run(["ip", "-o", "-4", "addr", "show", "dev", interface],
+                             capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return address_of(out.stdout) if out.returncode == 0 else None
 
 
 def parse_bitrate_mbps(value: Any) -> float | None:
@@ -193,6 +230,7 @@ class UdpLoadWorker(Worker):
         self._total_bytes = 0
         self._backfilled = 0
         self._last_line: str | None = None
+        self._warned_no_address = False
 
     @property
     def name(self) -> str:  # type: ignore[override]
@@ -217,8 +255,19 @@ class UdpLoadWorker(Worker):
             # Uplink: the rig sends, so only the server can see what arrived.
             # Run a block and ask it what it saw.
             cmd += ["-t", str(int(self.block_s)), "--get-server-output"]
+        # The measured link is the modem's interface, not the Wi-Fi the phone
+        # is on. Bind to it so a second route can never quietly send the test
+        # somewhere else. If it has no address there is nothing to bind to, and
+        # the routing table is a better answer than a test that will not start.
         if self.interface:
-            cmd += ["-B", self.interface]
+            address = interface_address(self.interface)
+            if address:
+                cmd += ["-B", address]
+            elif not self._warned_no_address:
+                self._warned_no_address = True
+                log.warning("%s has no IPv4 address; letting the routing table "
+                            "choose which interface the load test uses",
+                            self.interface)
         if self.username and self.public_key_path:
             cmd += ["--username", self.username,
                     "--rsa-public-key-path", self.public_key_path]

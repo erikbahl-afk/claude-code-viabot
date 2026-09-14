@@ -41,7 +41,12 @@ purpose.
 
 **The measured link is `eth0`, not the Wi-Fi you are connected to.** `ping` is
 pinned with `-I eth0`. Anything new that measures the uplink must pin it too, or
-it will silently measure the wrong interface.
+it will silently measure the wrong interface. **iperf3 is pinned differently
+from ping**: `-B` takes an *address*, not an interface name, so `-B eth0` fails
+with "Name or service not known" and the test never starts. `udpload.interface_address()`
+resolves it, and falls back to the routing table when the modem is between
+leases — binding is worth having, but not at the cost of a test that refuses to
+run.
 
 **Don't enable iperf3 or `udp_load` by default.** The SIM is unlimited, so this
 is not about the data bill — the *example* config ships them off because a fresh
@@ -159,6 +164,7 @@ indoor positioning. Do not make Pause merely cosmetic.
 | `viabot_survey/router_client.py` | Modem stats. `AtOverSshRouterClient` is the one that works here: SSH to the router, AT to the modem. `normalize_signal` matches field names across firmwares for the HTTP clients |
 | `scripts/setup.sh`, `setup_ap.sh` | Provisioning; both idempotent, both re-runnable |
 | `scripts/thermal_test.sh` | Does the closed case cook the Pi? Decodes `get_throttled`, which is where the answer actually lives |
+| `scripts/capacity_test.sh`, `viabot_survey/capacity.py` | The one-off ceiling test: how much can this link carry, as opposed to did it keep up. Saturates the uplink, so it refuses to run during a walk |
 | `config/config.example.yaml` | The default layer *and* the documentation for every setting |
 
 Configuration merges in three layers: the example file, then
@@ -168,7 +174,7 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 224 tests, no camera or rig needed
+.venv/bin/python -m pytest        # 238 tests, no camera or rig needed
 ```
 
 Most of the suite runs anywhere: workers are tested through their parsing and

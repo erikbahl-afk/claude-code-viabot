@@ -128,6 +128,11 @@ class SurveyRunner:
         load = config["udp_load"]
         common = dict(
             server=load["server"],
+            # Pin the uplink, exactly as ping does. Without this the test
+            # follows the routing table, which happens to be right today and
+            # would silently stop being right the moment the Pi gained a
+            # second route.
+            interface=uplink.get("interface"),
             datagram_bytes=load["datagram_bytes"],
             run_data_budget_mb=load["run_data_budget_mb"],
             username=load["username"],

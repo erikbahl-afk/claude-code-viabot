@@ -15,6 +15,7 @@ import time
 
 import pytest
 
+from viabot_survey.workers import udpload
 from viabot_survey.workers.udpload import (DOWNLINK, UPLINK, UdpLoadWorker,
                                            parse_interval, parse_server_output)
 
@@ -365,3 +366,39 @@ def test_uplink_loss_comes_back_from_the_far_end_and_lands_on_samples():
         assert fields["udp_up_loss_pct"] is not None
         assert fields["udp_up_jitter_ms"] is not None
     assert worker.snapshot()["backfilled_samples"] >= 3
+
+
+# ---- binding to the link that is actually being measured -------------------
+
+def test_an_address_is_picked_out_of_ip_output():
+    """iperf3's -B takes an address where ping's -I takes a name, so the
+    interface has to be resolved before the test can be pinned to it."""
+    assert udpload.address_of(
+        "3: eth0    inet 192.168.1.42/24 brd 192.168.1.255 scope global eth0"
+    ) == "192.168.1.42"
+
+
+def test_an_interface_with_no_address_resolves_to_nothing():
+    """The modem can be between leases. There is then nothing to bind to."""
+    assert udpload.address_of("1: lo    inet6 ::1/128 scope host") is None
+    assert udpload.address_of("") is None
+
+
+def test_the_load_test_is_pinned_to_the_measured_link(monkeypatch):
+    """The rig broadcasts its own Wi-Fi and measures a different interface.
+    Without -B the test follows the routing table, which is right today and
+    stops being right the moment the Pi gains a second route."""
+    monkeypatch.setattr(udpload, "interface_address", lambda name: "10.0.0.7")
+    worker = udpload.UdpLoadWorker(server="example.test", interface="eth0")
+    cmd = worker.build_command()
+    assert "-B" in cmd and cmd[cmd.index("-B") + 1] == "10.0.0.7"
+    # Never the interface name: iperf3 rejects that outright and the test
+    # would never start.
+    assert "eth0" not in cmd
+
+
+def test_an_unresolvable_interface_falls_back_to_the_routing_table(monkeypatch):
+    """Worse than binding, but far better than a test that refuses to run."""
+    monkeypatch.setattr(udpload, "interface_address", lambda name: None)
+    worker = udpload.UdpLoadWorker(server="example.test", interface="eth0")
+    assert "-B" not in worker.build_command()
