@@ -181,9 +181,37 @@ during a survey, treat closed-and-latched as transport only, route the foam
 channels so the Pi's fan exhaust and the router's vents reach an opening, and
 add vent holes with mesh only if needed.
 
-**Not yet validated.** The plan is an hour on the bench with the rig assembled
-and closed, checking `vcgencmd measure_temp` periodically, before trusting it in
-a garage. That has not been done.
+**Validated 2026-09-13 — it does not overheat.** An hour with the rig fully
+assembled, the case closed, and a survey run active so the camera was encoding:
+
+| | |
+|---|---|
+| Start | 45.7 °C |
+| Peak | **57.4 °C**, across 119 samples |
+| Time at or above 70 °C | **none** — not one sample of 119 |
+| Throttling | **none, at any point** — `get_throttled` stayed `0x0` for the whole hour |
+
+The curve flattened rather than climbing: about +10 °C over the first 40 minutes,
+then roughly +1 °C over the last 18, so it was settling near the high fifties
+rather than still heading up. Against the Pi 4's 80 °C soft limit that leaves
+**roughly 23 °C of headroom**, which is enough to absorb a garage a good deal
+warmer than the room this was measured in. Vent holes are not needed.
+
+Two cautions on reading that. It was measured at whatever the room's ambient was
+— a garage on a hot afternoon starts higher, and the peak rises with it roughly
+one-for-one. And it does not say anything about the **modem**, which has no
+temperature sensor the Pi can read and which works hardest exactly where signal
+is weak.
+
+**The CPU clock dipping to 900–1200 MHz is not throttling.** It appears
+throughout the log and looks alarming. `get_throttled` was zero every time, so
+the cap was never thermal or electrical — that is the ondemand governor dropping
+the clock because the work was not there to need it. Recording video in copy
+mode leaves the Pi 4 mostly idle.
+
+**Bonus result: the power splice held.** An hour under load with no undervoltage
+flag at all. That splice is the part that has failed before, and this is the
+longest continuous run anyone has measured it over.
 
 ## Things that are known
 

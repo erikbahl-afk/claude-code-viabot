@@ -209,9 +209,11 @@ Specifically open:
   servers. It needs a domain name pointed at the box first.
 - Whether the measured teleop bitrate holds across robots and camera
   settings. One session was measured; the config is set from it.
-- Whether the closed Apache 2800 case overheats. `./scripts/thermal_test.sh`
-  answers it in an hour — run it with a survey **active**, since the camera
-  encoding is most of the heat and an idle rig proves nothing.
+- What the *modem* does thermally. The Pi is settled — an hour closed and
+  recording peaked at 57.4 C with no throttling at all (2026-09-13), leaving
+  ~23 °C of headroom — but the modem has no sensor the Pi can read, and it
+  works hardest exactly where signal is weak. Re-run `./scripts/thermal_test.sh`
+  in a hot garage rather than assuming the bench figure transfers.
 - Dead-zone thresholds are invented — `deadzone.provisional: true` (80% loss or
   1500 ms, sustained 5 s). The plan is to set them from one real survey walk.
   Do not quietly treat the current numbers as requirements. A finished run can
