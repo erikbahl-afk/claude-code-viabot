@@ -137,12 +137,19 @@ step "Services"
 install -m 0644 "$SRC/viabot-receiver.service" /etc/systemd/system/
 install -m 0644 "$SRC/viabot-iperf3@.service" /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now viabot-receiver >/dev/null
+# enable, then restart — not `enable --now`, which does nothing at all to a
+# service that is already running. On a re-run after --rotate-secrets that
+# left the receiver validating against the token it read at boot, while the
+# env file and every rig had the new one. The rejection says "bad token",
+# which sends you looking at the rig, where nothing is wrong.
+systemctl enable viabot-receiver >/dev/null
 # Two instances: one iperf3 server runs one test at a time, and the rig
 # measures both directions at once.
-systemctl enable --now "viabot-iperf3@$UPLINK_PORT" >/dev/null
-systemctl enable --now "viabot-iperf3@$DOWNLINK_PORT" >/dev/null
-ok "receiver and both iperf3 servers started"
+systemctl enable "viabot-iperf3@$UPLINK_PORT" >/dev/null
+systemctl enable "viabot-iperf3@$DOWNLINK_PORT" >/dev/null
+systemctl restart viabot-receiver \
+  "viabot-iperf3@$UPLINK_PORT" "viabot-iperf3@$DOWNLINK_PORT"
+ok "receiver and both iperf3 servers restarted with the current secrets"
 
 # ---------------------------------------------------------------------------
 # Vultr's Debian image ships ufw enabled, allowing SSH and nothing else. Left
