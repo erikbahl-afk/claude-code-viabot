@@ -430,7 +430,8 @@ class SurveyRunner:
     def _report_bundle(self, run_id: str) -> tuple[Path, dict]:
         """Where a run's publishable files are built, and the report itself."""
         run = self.storage.get_run(run_id)
-        built = report.build_report(self.storage, run) if run else {}
+        built = (report.build_report(self.storage, run, self.config["udp_load"])
+                 if run else {})
         return Path(self.config.data_dir) / "reports" / run_id, built
 
     def queue_for_publishing(self, run_id: str) -> int:

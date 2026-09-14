@@ -131,6 +131,15 @@ means **results from before and after enabling it are not comparable**, and the
 thresholds were conceived for an idle link. Set thresholds after deciding
 whether the load test is on, not before.
 
+**The throughput plot is not a speed test, and the report says so.** The rig
+holds a UDP stream open at the bitrate a teleop session really uses and records
+what arrived each second. So the plot's ceiling is the rate that was *offered*
+(1.5 Mbit/s up, 300 kbit/s down), not what the link could have carried, and a
+flat trace means "the stream got through", not "that is all the link can do".
+Nothing here measures capacity: the iperf3 burst worker that would is shipped
+disabled on purpose, because saturating the link would manufacture exactly the
+loss and latency the dead-zone detection reads.
+
 **The percentage is only as good as the operator's discipline.** It is a share
 of time, not of floor area, so it holds only if the walk is at a steady pace
 and paused whenever standing still. A customer operating the rig who does not

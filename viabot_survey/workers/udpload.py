@@ -89,6 +89,24 @@ FIELDS = {
 }
 
 
+def parse_bitrate_mbps(value: Any) -> float | None:
+    """iperf3's own bitrate spelling ("1.5M", "300k", "750000") as Mbit/s.
+
+    The report needs the *offered* rate to draw against what arrived, and the
+    configured string is the only place it is written down.
+    """
+    if value is None:
+        return None
+    text = str(value).strip().rstrip("Bb")
+    match = re.fullmatch(r"([\d.]+)\s*([KMGT]?)", text, re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return float(match.group(1)) * _BIT_SCALE[match.group(2).upper()]
+    except (ValueError, KeyError):
+        return None
+
+
 def _scale(match: re.Match) -> dict[str, Any]:
     fields = match.groupdict()
     return {
