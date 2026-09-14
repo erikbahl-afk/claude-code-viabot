@@ -210,7 +210,7 @@ Specifically open:
 - Whether the measured teleop bitrate holds across robots and camera
   settings. One session was measured; the config is set from it.
 - What the *modem* does thermally. The Pi is settled — an hour closed and
-  recording peaked at 56.9 °C with no throttling at all (2026-09-13), leaving
+  recording peaked at 57.4 C with no throttling at all (2026-09-13), leaving
   ~23 °C of headroom — but the modem has no sensor the Pi can read, and it
   works hardest exactly where signal is weak. Re-run `./scripts/thermal_test.sh`
   in a hot garage rather than assuming the bench figure transfers.

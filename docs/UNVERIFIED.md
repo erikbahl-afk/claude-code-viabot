@@ -187,7 +187,8 @@ assembled, the case closed, and a survey run active so the camera was encoding:
 | | |
 |---|---|
 | Start | 45.7 °C |
-| Peak | **56.9 °C** at 57 minutes |
+| Peak | **57.4 °C**, across 119 samples |
+| Time at or above 70 °C | **none** — not one sample of 119 |
 | Throttling | **none, at any point** — `get_throttled` stayed `0x0` for the whole hour |
 
 The curve flattened rather than climbing: about +10 °C over the first 40 minutes,
