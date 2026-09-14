@@ -145,6 +145,27 @@ systemctl enable --now "viabot-iperf3@$DOWNLINK_PORT" >/dev/null
 ok "receiver and both iperf3 servers started"
 
 # ---------------------------------------------------------------------------
+# Vultr's Debian image ships ufw enabled, allowing SSH and nothing else. Left
+# alone it blocks port 80, so Caddy silently fails to get a certificate, and it
+# blocks the iperf3 ports, so the load test fails in a way that looks exactly
+# like a bad rig config. The provider's own firewall panel is a separate thing
+# again, and this script cannot touch that one — but it can do this one.
+step "Firewall"
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+  # Only ever adds allows, so it cannot lock anyone out of a box they are
+  # currently connected to.
+  ufw allow 80/tcp  >/dev/null   # Caddy: the certificate challenge
+  ufw allow 443/tcp >/dev/null   # the report pages
+  # No /tcp suffix: iperf3 negotiates over TCP and sends the test over UDP.
+  ufw allow "$UPLINK_PORT"   >/dev/null
+  ufw allow "$DOWNLINK_PORT" >/dev/null
+  ok "ufw is active; opened 80, 443, and $UPLINK_PORT/$DOWNLINK_PORT (TCP+UDP)"
+else
+  info "ufw is not active; nothing to open here"
+fi
+info "your provider's own firewall is separate — check it if anything is unreachable"
+
+# ---------------------------------------------------------------------------
 step "TLS"
 if [[ $USE_TLS -eq 1 ]]; then
   if ! command -v caddy >/dev/null 2>&1; then
@@ -236,7 +257,8 @@ curl -fsS --max-time 5 "http://127.0.0.1:8089/healthz" >/dev/null \
 printf '\n%s==>%s %sSetup complete.%s\n' "$BLUE" "$OFF" "$GREEN" "$OFF"
 cat <<SUMMARY
 
-  Open the firewall for these, in your provider's control panel:
+  If your provider has its own firewall (Vultr and Linode both do, separate
+  from the one on the box), open these there too:
 
       TCP 80, 443           the report pages (Caddy needs 80 to get a cert)
       TCP and UDP $UPLINK_PORT      uplink test
