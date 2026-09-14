@@ -150,8 +150,12 @@ if [[ $USE_TLS -eq 1 ]]; then
   if ! command -v caddy >/dev/null 2>&1; then
     KEYRING=/usr/share/keyrings/caddy-stable-archive-keyring.gpg
     install -d -m 0755 /usr/share/keyrings
+    # --yes, because gpg asks "Overwrite? (y/N)" when the keyring already
+    # exists — which it does after any failed run. A setup script that stops
+    # dead waiting for a keypress is not re-runnable, and would hang outright
+    # if this were ever driven by anything but a person at a terminal.
     curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
-      | gpg --dearmor -o "$KEYRING"
+      | gpg --dearmor --yes -o "$KEYRING"
     # An empty keyring is the failure that does not announce itself: apt goes
     # on to report the repository as unsigned, which reads like the vendor's
     # problem rather than a missing gpg here.
