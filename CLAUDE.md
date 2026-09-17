@@ -110,6 +110,14 @@ measurable. For the same reason an interrupted run is analysed on the next
 startup rather than merely closed: everything up to the cut is good data, and
 discarding it means driving back to the garage.
 
+**A walk shorter than one uplink block measures no uplink at all.** Uplink loss
+is only countable at the far end, so the rig runs a fixed block
+(`uplink_block_s`, 30 s) and then asks the server what arrived — a block cut
+short by the run ending reports nothing. A 23-second test walk therefore has a
+full downlink trace and no uplink whatsoever, and the report used to drop the
+section rather than say so. It now says why. The same applies to the tail of
+every real walk: up to one block's worth of uplink is lost at the end.
+
 **A worker that finishes its work is not a worker that failed.** `Worker._loop`
 backs off exponentially between restarts, which is right for something that
 cannot start and wrong for the uplink load test, which returns after every
@@ -231,7 +239,7 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 260 tests, no camera or rig needed
+.venv/bin/python -m pytest        # 263 tests, no camera or rig needed
 ```
 
 Most of the suite runs anywhere: workers are tested through their parsing and
