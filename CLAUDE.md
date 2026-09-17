@@ -110,6 +110,18 @@ measurable. For the same reason an interrupted run is analysed on the next
 startup rather than merely closed: everything up to the cut is good data, and
 discarding it means driving back to the garage.
 
+**iperf3 3.17 changed the credential encryption, and it is not compatible.**
+Before 3.17 the client encrypts with PKCS#1 v1.5 padding; from 3.17 it uses
+OAEP. A mismatch is rejected as **"test authorization failed"** — the same three
+words a wrong password gets — and the real reason, `rsa routines::padding check
+failed`, appears *only in the server's own log*. This cost a long hunt with
+every credential provably correct: the rig runs 3.18 (Raspberry Pi OS trixie),
+the Dallas server runs 3.16 (Ubuntu 24.04). `udp_load.auth_padding: auto` tries
+the modern padding and falls back once on a rejection, and only when the local
+iperf3 has `--use-pkcs1-padding` at all. When an authentication problem has a
+correct password and a correct clock, compare `iperf3 --version` on both ends
+before anything else.
+
 **iperf3 hot-reloads the password but caches the key.** Measured against 3.16:
 the `--authorized-users-path` file is re-read on every connection, so a rotated
 password takes effect at once — but the `--rsa-private-key-path` is read once at
@@ -210,7 +222,7 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 251 tests, no camera or rig needed
+.venv/bin/python -m pytest        # 256 tests, no camera or rig needed
 ```
 
 Most of the suite runs anywhere: workers are tested through their parsing and

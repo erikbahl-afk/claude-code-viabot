@@ -45,6 +45,7 @@ import shutil
 import subprocess
 import time
 from collections import deque
+from functools import lru_cache
 from typing import Any, Callable
 
 from .base import STATE_DEGRADED, STATE_FAILED, Worker
@@ -102,13 +103,40 @@ ERROR_RE = re.compile(r"^iperf3: error - (?P<message>.+?)\s*$", re.MULTILINE)
 #: out is rejected, and the message is the same one a wrong password gets.
 AUTH_SKEW_TOLERANCE_S = 10
 
+#: iperf3 3.17 changed the authentication crypto from PKCS#1 v1.5 padding to
+#: OAEP. A newer client cannot authenticate to an older server: the server
+#: fails to decrypt and reports it as an authorization failure, so a padding
+#: mismatch is indistinguishable from a wrong password at the client. The
+#: server's own log says "padding check failed", which is the only place the
+#: truth appears.
+PKCS1_FLAG = "--use-pkcs1-padding"
+
 AUTH_HINT = (
-    "the server rejected the credentials. Either udp_load.username/password "
-    f"do not match the server's, or the rig's clock is more than "
-    f"{AUTH_SKEW_TOLERANCE_S}s out — iperf3 signs every test with a timestamp "
-    "and this Pi has no RTC, so an unsynchronised clock fails exactly like a "
-    "wrong password"
+    "the server rejected the credentials. Three things do that: "
+    "udp_load.username/password not matching the server's; the rig's clock "
+    f"being more than {AUTH_SKEW_TOLERANCE_S}s out, because iperf3 signs every "
+    "test with a timestamp and this Pi has no RTC; or this iperf3 being newer "
+    "than the server's, which changed the encryption padding in 3.17"
 )
+
+
+@lru_cache(maxsize=1)
+def iperf_supports_pkcs1() -> bool:
+    """Whether the local iperf3 can fall back to the older padding.
+
+    Only 3.17 and later have the flag at all — earlier versions speak PKCS#1
+    and nothing else, so passing it to them would break a working setup.
+    """
+    try:
+        result = subprocess.run(["iperf3", "--help"], capture_output=True,
+                                text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return PKCS1_FLAG in (result.stdout + result.stderr)
+
+
+def is_auth_failure(text: str) -> bool:
+    return "authorization failed" in text.lower()
 
 
 def parse_error(text: str) -> str | None:
@@ -241,6 +269,7 @@ class UdpLoadWorker(Worker):
                  port: int = 5201, bitrate: str = "2M",
                  datagram_bytes: int = DEFAULT_DATAGRAM_BYTES,
                  block_s: float = 30.0, interface: str | None = None,
+                 auth_padding: str = "auto",
                  run_data_budget_mb: float | None = 2000.0,
                  username: str = "", password: str = "", public_key_path: str = "",
                  on_backfill: Callable[[list[tuple[float, dict]]], None] | None = None,
@@ -267,6 +296,10 @@ class UdpLoadWorker(Worker):
         self._last_line: str | None = None
         self._warned_no_address = False
         self._last_reason: str | None = None
+        # None = not yet known. "auto" settles it on the first rejection, which
+        # is the only moment the answer is observable from this end.
+        self._pkcs1: bool | None = {"pkcs1": True, "oaep": False}.get(
+            str(auth_padding).lower())
 
     @property
     def name(self) -> str:  # type: ignore[override]
@@ -307,6 +340,8 @@ class UdpLoadWorker(Worker):
         if self.username and self.public_key_path:
             cmd += ["--username", self.username,
                     "--rsa-public-key-path", self.public_key_path]
+            if self._pkcs1:
+                cmd.append(PKCS1_FLAG)
         return cmd
 
     def build_env(self) -> dict[str, str] | None:
@@ -369,6 +404,18 @@ class UdpLoadWorker(Worker):
         credential would otherwise write the same line into the event log twice
         a minute for the length of a walk and bury everything else in it.
         """
+        # A rejection is the one moment this end can learn that the server is
+        # older than this iperf3 and wants the pre-3.17 padding. Try it once,
+        # rather than making someone read the *server's* log to find out.
+        if (is_auth_failure(text) and self._pkcs1 is None
+                and self.username and iperf_supports_pkcs1()):
+            self._pkcs1 = True
+            self._set_state(STATE_DEGRADED, "retrying with pre-3.17 padding")
+            self.emit("warning",
+                      f"{self.name}: the server would not accept this iperf3's "
+                      "encryption; retrying with the padding used before 3.17")
+            return
+
         parsed = parse_error(text)
         reason = parsed or fallback
         # A reason iperf3 gave is a fault to fix; silence is merely a bad spot.
@@ -498,6 +545,7 @@ class UdpLoadWorker(Worker):
             "server": self.server,
             "port": self.port,
             "bitrate": self.bitrate,
+            "pkcs1_padding": self._pkcs1,
             "live": self.direction == DOWNLINK,
             "loss_pct": (self._latest or {}).get("loss_pct"),
             "jitter_ms": (self._latest or {}).get("jitter_ms"),

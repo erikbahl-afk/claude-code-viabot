@@ -145,6 +145,35 @@ if [[ -n "$USERNAME" && -n "$PUBLIC_KEY" ]]; then
   AUTH=(--username "$USERNAME" --rsa-public-key-path "$PUBLIC_KEY")
 fi
 
+# ---------------------------------------------------------------------------
+# iperf3 3.17 changed the credential encryption from PKCS#1 v1.5 to OAEP, and
+# the two do not interoperate. A newer client against an older server is
+# rejected as an authorization failure — indistinguishable here from a wrong
+# password, because the real reason ("padding check failed") is only ever
+# printed in the server's log. So find out which the server wants, once,
+# instead of leaving someone to read a log on another machine.
+# ---------------------------------------------------------------------------
+PADDING=()
+auth_works() {
+  local out
+  out="$(iperf3 -c "$SERVER" -p "$UP_PORT" -t 1 \
+         "${BIND[@]}" "${AUTH[@]}" "$@" 2>&1 || true)"
+  [[ "$out" != *"authorization failed"* ]]
+}
+
+if [[ ${#AUTH[@]} -gt 0 ]]; then
+  step "checking authentication"
+  if auth_works; then
+    ok "authenticated"
+  elif iperf3 --help 2>&1 | grep -q -- "--use-pkcs1-padding" \
+       && auth_works --use-pkcs1-padding; then
+    PADDING=(--use-pkcs1-padding)
+    ok "authenticated (this server predates iperf3 3.17; using the old padding)"
+  else
+    warn "could not authenticate either way — the result below says what failed"
+  fi
+fi
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -157,7 +186,7 @@ run_test() {                     # label port file extra-args...
   local label="$1" port="$2" file="$3"; shift 3
   info "$label ..."
   iperf3 -c "$SERVER" -p "$port" -J -t "$SECONDS_EACH" \
-         "${BIND[@]}" "${AUTH[@]}" "$@" > "$file" 2>"$file.err" || true
+         "${BIND[@]}" "${AUTH[@]}" "${PADDING[@]}" "$@" > "$file" 2>"$file.err" || true
   if ! python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$file" 2>/dev/null; then
     warn "$label produced no usable result"
     sed -n '1,3p' "$file.err" | while read -r line; do info "$line"; done
