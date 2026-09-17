@@ -32,6 +32,13 @@ class Worker:
     #: Seconds to wait after a crash before the first restart attempt.
     restart_delay_s = 2.0
     max_restart_delay_s = 60.0
+    #: A run_once() that lasted at least this long did its job, whatever it
+    #: returned. Backing off after one of those is wrong: the uplink load test
+    #: returns after every 30-second block *by design*, and treating that as a
+    #: failure doubled the gap between blocks until it hit a minute — so two
+    #: thirds of a walk would have had no uplink reading, looking exactly like
+    #: coverage gaps rather than a scheduling artefact.
+    healthy_run_s = 5.0
 
     def __init__(self, enabled: bool = True,
                  on_event: Callable[[str, str], None] | None = None) -> None:
@@ -75,6 +82,7 @@ class Worker:
     def _loop(self) -> None:
         delay = self.restart_delay_s
         while not self._stop.is_set():
+            started = time.monotonic()
             try:
                 self._set_state(STATE_RUNNING)
                 self.run_once()
@@ -82,7 +90,12 @@ class Worker:
                     break
                 # run_once returning on its own is not an error, but it does
                 # mean the underlying process ended; fall through to restart.
-                self.emit("warning", f"{self.name} exited, restarting")
+                # Only worth saying out loud when it ended quickly: a worker
+                # that works in blocks returns every time it finishes one, and
+                # announcing that twice a minute buries everything else in the
+                # event log.
+                if time.monotonic() - started < self.healthy_run_s:
+                    self.emit("warning", f"{self.name} exited, restarting")
             except Exception as exc:  # noqa: BLE001 - a worker must never kill the app
                 log.exception("%s crashed", self.name)
                 self._set_state(STATE_FAILED, str(exc))
@@ -90,6 +103,9 @@ class Worker:
             if self._stop.is_set():
                 break
             self.restarts += 1
+            # Back off only from something that keeps failing straight away.
+            if time.monotonic() - started >= self.healthy_run_s:
+                delay = self.restart_delay_s
             if not self.wait(delay):
                 break
             delay = min(delay * 2, self.max_restart_delay_s)

@@ -110,6 +110,15 @@ measurable. For the same reason an interrupted run is analysed on the next
 startup rather than merely closed: everything up to the cut is good data, and
 discarding it means driving back to the garage.
 
+**A worker that finishes its work is not a worker that failed.** `Worker._loop`
+backs off exponentially between restarts, which is right for something that
+cannot start and wrong for the uplink load test, which returns after every
+30-second block *by design*. Unreset, the gap doubled — 2, 4, 8, 16, 32, 60 —
+until two thirds of a walk carried no uplink reading, indistinguishable from
+coverage gaps. A `run_once()` lasting at least `healthy_run_s` now resets the
+delay and is not announced as a restart. Keep that distinction if you add a
+worker that works in blocks.
+
 **iperf3 3.17 changed the credential encryption, and it is not compatible.**
 Before 3.17 the client encrypts with PKCS#1 v1.5 padding; from 3.17 it uses
 OAEP. A mismatch is rejected as **"test authorization failed"** — the same three
@@ -222,7 +231,7 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 256 tests, no camera or rig needed
+.venv/bin/python -m pytest        # 260 tests, no camera or rig needed
 ```
 
 Most of the suite runs anywhere: workers are tested through their parsing and
