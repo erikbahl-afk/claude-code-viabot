@@ -402,3 +402,26 @@ def test_an_unresolvable_interface_falls_back_to_the_routing_table(monkeypatch):
     monkeypatch.setattr(udpload, "interface_address", lambda name: None)
     worker = udpload.UdpLoadWorker(server="example.test", interface="eth0")
     assert "-B" not in worker.build_command()
+
+
+# ---- saying why a test produced nothing ------------------------------------
+
+def test_an_authorization_failure_names_both_of_its_causes():
+    """iperf3's own message names neither, and one of them — a clock this Pi
+    cannot keep on its own — is not the one anybody checks first. Measured
+    against iperf3 3.16: a client 10s out authenticates, 11s out is rejected,
+    with exactly the message a wrong password gets."""
+    reason = udpload.parse_error("iperf3: error - test authorization failed")
+    assert "username/password" in reason
+    assert "RTC" in reason
+
+
+def test_other_failures_are_passed_through_as_iperf3_worded_them():
+    assert udpload.parse_error(
+        "iperf3: error - unable to connect to server: Connection refused"
+    ) == "unable to connect to server: Connection refused"
+
+
+def test_ordinary_output_is_not_mistaken_for_a_failure():
+    assert udpload.parse_error(RECEIVER_LINE) is None
+    assert udpload.parse_error("") is None
