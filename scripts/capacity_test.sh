@@ -106,6 +106,38 @@ if [[ -n "$IFACE" ]]; then
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# iperf3 signs every test with a timestamp and rejects a client whose clock is
+# more than ~10 s out — with the same message a wrong password gets. This Pi
+# has no RTC, so that is a real possibility and not a theoretical one. Read the
+# server's clock off an HTTPS response header, which needs no credentials and
+# works even when it answers 401.
+# ---------------------------------------------------------------------------
+step "checking the clock against the server"
+SERVER_DATE="$(curl -sI --max-time 6 "https://$SERVER" 2>/dev/null \
+               | tr -d '\r' \
+               | awk 'tolower($1) == "date:" { sub(/^[^ ]+ /, ""); print; exit }' \
+               || true)"
+CLOCK_SKEW_S=""
+if [[ -n "$SERVER_DATE" ]]; then
+  CLOCK_SKEW_S="$(SERVER_DATE="$SERVER_DATE" python3 - <<'PY' 2>/dev/null || true
+import email.utils, os, time
+stamp = email.utils.parsedate_to_datetime(os.environ["SERVER_DATE"])
+print(round(time.time() - stamp.timestamp()))
+PY
+)"
+fi
+if [[ -z "$CLOCK_SKEW_S" ]]; then
+  warn "could not read the server's clock — carrying on."
+elif (( CLOCK_SKEW_S > 10 || CLOCK_SKEW_S < -10 )); then
+  warn "the rig's clock is ${CLOCK_SKEW_S}s off the server's."
+  info "iperf3 will refuse to authenticate. Fix it first:"
+  info "  sudo systemctl restart systemd-timesyncd && timedatectl"
+else
+  ok "clock is within ${CLOCK_SKEW_S}s of the server"
+fi
+export CLOCK_SKEW_S
+
 AUTH=()
 if [[ -n "$USERNAME" && -n "$PUBLIC_KEY" ]]; then
   [[ -f "$PUBLIC_KEY" ]] || die "public_key_path points at $PUBLIC_KEY, which does not exist.
@@ -151,4 +183,5 @@ fi
 
 step "result"
 CONFIGURED_UP="$CONFIGURED_UP" CONFIGURED_DOWN="$CONFIGURED_DOWN" \
-UDP_RATE="$UDP_RATE" PYTHONPATH="$ROOT" python3 -m viabot_survey.capacity "$WORK"
+UDP_RATE="$UDP_RATE" CLOCK_SKEW_S="$CLOCK_SKEW_S" \
+PYTHONPATH="$ROOT" python3 -m viabot_survey.capacity "$WORK"

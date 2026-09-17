@@ -238,3 +238,58 @@ def test_dead_zone_csv_export(client, storage):
 def test_health_endpoint_is_cheap_and_always_answers(client):
     body = client.get("/api/health").get_json()
     assert body["ok"] is True
+
+
+def test_a_refused_update_is_reported_rather_than_claimed_as_started(monkeypatch,
+                                                                     tmp_path):
+    """The dashboard used to say an update was under way whether or not
+    anything started. A refused sudo rule or a masked unit then looked
+    identical to success, which is the worst way for this to fail: nothing
+    happens and nothing says so."""
+    import subprocess
+
+    from viabot_survey import updater as updater_module
+
+    (tmp_path / "scripts").mkdir()
+    script = tmp_path / "scripts" / "update.sh"
+    script.write_text("#!/bin/sh\n")
+
+    up = updater_module.Updater.__new__(updater_module.Updater)
+    up.enabled = True
+    up.repo_root = tmp_path
+    up._applying_since = None
+
+    monkeypatch.setattr(updater_module.shutil, "which", lambda name: "/bin/systemctl")
+    monkeypatch.setattr(updater_module, "_unit_exists", lambda unit: True)
+    monkeypatch.setattr(
+        updater_module.subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            a[0] if a else [], 1, "", "Failed to start viabot-update.service: Access denied"))
+
+    with pytest.raises(updater_module.UpdateError) as caught:
+        up.apply()
+    assert "Access denied" in str(caught.value)
+    # And it must not be left looking like an update is in flight.
+    assert up._applying_since is None
+
+
+def test_an_accepted_update_still_reports_started(monkeypatch, tmp_path):
+    import subprocess
+
+    from viabot_survey import updater as updater_module
+
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "update.sh").write_text("#!/bin/sh\n")
+
+    up = updater_module.Updater.__new__(updater_module.Updater)
+    up.enabled = True
+    up.repo_root = tmp_path
+    up._applying_since = None
+
+    monkeypatch.setattr(updater_module.shutil, "which", lambda name: "/bin/systemctl")
+    monkeypatch.setattr(updater_module, "_unit_exists", lambda unit: True)
+    monkeypatch.setattr(
+        updater_module.subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], 0, "", ""))
+
+    assert up.apply()["started"] is True

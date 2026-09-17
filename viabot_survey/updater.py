@@ -142,10 +142,32 @@ class Updater:
         # the very script it launched. Fall back to a bare detached process on
         # a dev box with no systemd.
         if shutil.which("systemctl") and _unit_exists("viabot-update.service"):
+            # --no-block returns as soon as systemd has queued the job, so this
+            # can be waited on: what comes back is whether the update was
+            # *accepted*, not whether it finished. Reporting "started" without
+            # looking was the bug — a refused sudo rule or a masked unit left
+            # the dashboard claiming an update was under way while nothing
+            # happened at all, which is the worst way for this to fail.
             command = ["sudo", "-n", "systemctl", "start", "--no-block",
                        "viabot-update.service"]
-        else:
-            command = [str(script)]
+            try:
+                result = subprocess.run(command, cwd=self.repo_root, timeout=20,
+                                        capture_output=True, text=True)
+            except (OSError, subprocess.SubprocessError) as exc:
+                self._applying_since = None
+                raise UpdateError(f"could not start updater: {exc}") from exc
+            if result.returncode != 0:
+                self._applying_since = None
+                detail = (result.stderr or result.stdout or "").strip()
+                raise UpdateError(
+                    "systemd refused to start the update"
+                    + (f": {detail.splitlines()[0]}" if detail else "")
+                    + ". Run ./scripts/update.sh over SSH to see why.")
+            return {"started": True, "command": " ".join(command)}
+
+        # No systemd: run the script detached, because it restarts the very
+        # process making this call. Nothing can be waited on here.
+        command = [str(script)]
         try:
             subprocess.Popen(command, cwd=self.repo_root, start_new_session=True,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

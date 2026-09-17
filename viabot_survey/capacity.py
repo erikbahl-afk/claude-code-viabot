@@ -95,6 +95,38 @@ def udp_result(doc: dict | None) -> dict[str, Any]:
     }
 
 
+#: Measured against iperf3 3.16: a client clock 10 s out authenticates, 11 s
+#: out is rejected — with the same message a wrong password gets.
+AUTH_SKEW_TOLERANCE_S = 10
+
+
+def auth_advice(skew_s: float | None) -> list[str]:
+    """What to check when the server rejected the credentials.
+
+    iperf3 signs every test with a timestamp, so an unsynchronised clock fails
+    exactly like a wrong password. This Pi has no RTC, which makes the clock
+    the more likely of the two and the one nobody checks first — so when the
+    skew is known and out of bounds, say so instead of listing both.
+    """
+    if skew_s is not None and abs(skew_s) > AUTH_SKEW_TOLERANCE_S:
+        return [
+            f"The rig's clock is {skew_s:+.0f}s against the server, and iperf3",
+            f"rejects anything more than {AUTH_SKEW_TOLERANCE_S}s out. That alone",
+            "explains this. Fix the clock first:  sudo systemctl restart systemd-timesyncd",
+            "This Pi has no RTC, so it starts every boot with no idea of the time.",
+        ]
+    lines = ["The server rejected the credentials. Two things do that:",
+             "  1. udp_load.username / password not matching the server's",
+             f"  2. the rig's clock being more than {AUTH_SKEW_TOLERANCE_S}s out —",
+             "     iperf3 signs each test with a timestamp, and this Pi has no RTC"]
+    if skew_s is not None:
+        lines.append(f"  (clock checked: {skew_s:+.0f}s against the server, "
+                     "so it is not that)")
+    else:
+        lines.append("  (the clock could not be checked against the server)")
+    return lines
+
+
 def headroom(ceiling_mbps: float | None, wanted_mbps: float | None) -> str:
     """How a measured ceiling reads against a rate somebody wants to send."""
     if not ceiling_mbps or not wanted_mbps:
@@ -125,12 +157,15 @@ def _line(label: str, result: dict, *, udp: bool = False) -> str:
 
 
 def render(work: Path, *, configured_up: str | None, configured_down: str | None,
-           udp_rate: str | None) -> str:
+           udp_rate: str | None, skew_s: float | None = None) -> str:
     up = tcp_result(load(work / "up.json"))
     down = tcp_result(load(work / "down.json"))
 
     lines = ["", "Ceiling at this spot (TCP, uncapped):",
              _line("uplink", up), _line("downlink", down), ""]
+
+    if any("authorization" in (r.get("error") or "") for r in (up, down)):
+        lines += auth_advice(skew_s) + [""]
 
     wanted_up = parse_rate_mbps(configured_up)
     note = headroom(up.get("mbps"), wanted_up)
@@ -169,10 +204,16 @@ def main(argv: list[str]) -> int:
         print("usage: python -m viabot_survey.capacity <results-dir>",
               file=sys.stderr)
         return 2
+    raw = os.environ.get("CLOCK_SKEW_S") or ""
+    try:
+        skew: float | None = float(raw)
+    except ValueError:
+        skew = None
     print(render(Path(argv[1]),
                  configured_up=os.environ.get("CONFIGURED_UP"),
                  configured_down=os.environ.get("CONFIGURED_DOWN"),
-                 udp_rate=os.environ.get("UDP_RATE") or None))
+                 udp_rate=os.environ.get("UDP_RATE") or None,
+                 skew_s=skew))
     return 0
 
 

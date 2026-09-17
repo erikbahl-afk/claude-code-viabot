@@ -110,6 +110,15 @@ measurable. For the same reason an interrupted run is analysed on the next
 startup rather than merely closed: everything up to the cut is good data, and
 discarding it means driving back to the garage.
 
+**iperf3 authentication fails on a clock, not just on a password.** Every test
+is signed with a timestamp, and a client more than **10 seconds** out is
+rejected — measured against iperf3 3.16: 10s authenticates, 11s does not, and
+the message is "test authorization failed", exactly what a wrong password gets.
+This Pi has no RTC, so an unsynchronised clock silently stops `udp_load`
+working and points the blame at the credentials. `capacity_test.sh` reads the
+server's clock off an HTTPS `Date:` header before testing, and `udpload.parse_error()`
+spells out both causes.
+
 **Timestamps are the product.** Video correlation depends entirely on the system
 clock, and the Pi has no RTC. Preserve `clock_synced` reporting on samples, the
 control page, and the start-of-run warning.
@@ -174,7 +183,7 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 238 tests, no camera or rig needed
+.venv/bin/python -m pytest        # 248 tests, no camera or rig needed
 ```
 
 Most of the suite runs anywhere: workers are tested through their parsing and

@@ -44,6 +44,7 @@ import re
 import shutil
 import subprocess
 import time
+from collections import deque
 from typing import Any, Callable
 
 from .base import STATE_DEGRADED, STATE_FAILED, Worker
@@ -90,6 +91,40 @@ FIELDS = {
     UPLINK: ("udp_up_jitter_ms", "udp_up_loss_pct", "udp_up_mbps"),
     DOWNLINK: ("udp_down_jitter_ms", "udp_down_loss_pct", "udp_down_mbps"),
 }
+
+
+#: iperf3 prints its failures on stderr, which is folded into stdout here, so
+#: the reason a test produced nothing is already in hand — it just has to be
+#: read rather than thrown away.
+ERROR_RE = re.compile(r"^iperf3: error - (?P<message>.+?)\s*$", re.MULTILINE)
+
+#: Measured against iperf3 3.16: a client clock 10 s out authenticates, 11 s
+#: out is rejected, and the message is the same one a wrong password gets.
+AUTH_SKEW_TOLERANCE_S = 10
+
+AUTH_HINT = (
+    "the server rejected the credentials. Either udp_load.username/password "
+    f"do not match the server's, or the rig's clock is more than "
+    f"{AUTH_SKEW_TOLERANCE_S}s out — iperf3 signs every test with a timestamp "
+    "and this Pi has no RTC, so an unsynchronised clock fails exactly like a "
+    "wrong password"
+)
+
+
+def parse_error(text: str) -> str | None:
+    """The reason iperf3 gave for failing, in words worth showing an operator.
+
+    Authorization failures get spelled out because the message iperf3 prints
+    names neither of its two causes, and one of them — a clock the Pi cannot
+    keep on its own — is not the one anybody checks first.
+    """
+    match = ERROR_RE.search(text)
+    if not match:
+        return None
+    message = match.group("message")
+    if "authorization" in message.lower():
+        return AUTH_HINT
+    return message
 
 
 def address_of(text: str) -> str | None:
@@ -231,6 +266,7 @@ class UdpLoadWorker(Worker):
         self._backfilled = 0
         self._last_line: str | None = None
         self._warned_no_address = False
+        self._last_reason: str | None = None
 
     @property
     def name(self) -> str:  # type: ignore[override]
@@ -304,19 +340,43 @@ class UdpLoadWorker(Worker):
     def _run_stream(self) -> None:
         """Downlink: one long-lived stream, read a line at a time."""
         proc = self._launch()
+        # Enough of a tail to hold whatever iperf3 said on its way out. A
+        # stream that never yields a reading has a reason, and it is here.
+        tail: deque[str] = deque(maxlen=20)
+        measured = False
         try:
             for line in proc.stdout:  # type: ignore[union-attr]
                 if self.stopping:
                     return
+                tail.append(line)
                 reading = self._consume(line)
                 if reading and reading.get("loss_pct") is not None:
                     self._latest = reading
                     self._latest_ts = time.time()
+                    measured = True
                 if self.budget_spent:
                     self.emit("warning", f"{self.name}: run data budget reached")
                     return
+            if not measured and not self.stopping:
+                self._fail_with_reason("".join(tail), "the stream produced no readings")
         finally:
             self._terminate()
+
+    def _fail_with_reason(self, text: str, fallback: str) -> None:
+        """Report why a test produced nothing, saying it out loud once.
+
+        Once, because uplink blocks restart every 30 seconds: a misconfigured
+        credential would otherwise write the same line into the event log twice
+        a minute for the length of a walk and bury everything else in it.
+        """
+        parsed = parse_error(text)
+        reason = parsed or fallback
+        # A reason iperf3 gave is a fault to fix; silence is merely a bad spot.
+        self._set_state(STATE_FAILED if parsed else STATE_DEGRADED, reason)
+        failed = parsed is not None
+        if reason != self._last_reason:
+            self._last_reason = reason
+            self.emit("error" if failed else "warning", f"{self.name}: {reason}")
 
     def _run_block(self) -> None:
         """Uplink: a fixed block, then recover what the far end actually saw.
@@ -351,7 +411,7 @@ class UdpLoadWorker(Worker):
                               interval_ends: list[float]) -> None:
         readings = parse_server_output(text)
         if not readings:
-            self._set_state(STATE_DEGRADED, "the server returned no readings")
+            self._fail_with_reason(text, "the server returned no readings")
             return
 
         jitter, loss, mbps = FIELDS[UPLINK]

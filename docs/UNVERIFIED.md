@@ -180,6 +180,14 @@ start warns when the clock is unsynchronised, but nothing watches for NTP
 stepping it *during* a walk. A backward step would put samples out of order and
 break video correlation for everything after it.
 
+**`udp_load` may never have measured anything on this rig.** On 2026-09-17 the
+capacity probe came back "test authorization failed" in both directions, which
+is also what the load test would have been hitting silently — the worker only
+reported "the server returned no readings", so nothing distinguished a bad spot
+from a rejected login. Both are now named. Whether any walk ever carried a real
+UDP load is unverified; treat load figures from before this date as absent
+rather than as zero.
+
 **The rig carries plaintext secrets in public.** `config/config.yaml` holds the
 Wi-Fi passphrase, the router password, and — once publishing is on — the upload
 token and the iperf3 password. The card is not encrypted and the rig is carried

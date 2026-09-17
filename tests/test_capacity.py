@@ -121,3 +121,49 @@ def test_the_udp_verdict_follows_the_loss(tmp_path):
     out = capacity.render(tmp_path, configured_up="1.5M",
                           configured_down="300k", udp_rate="5M")
     assert "cannot carry it" in out
+
+
+# ---- the failure that actually happened -------------------------------------
+
+AUTH_FAILED = {"error": "test authorization failed"}
+
+
+def test_a_skewed_clock_is_named_as_the_cause_rather_than_listed():
+    """iperf3 signs each test with a timestamp and rejects a client more than
+    10s out — with the same message a wrong password gets. The Pi has no RTC,
+    so this is the likely cause and the last one anyone checks."""
+    advice = "\n".join(capacity.auth_advice(-847.0))
+    assert "-847s" in advice
+    assert "timesyncd" in advice
+    # Not a list of possibilities when we already know which one it is.
+    assert "Two things" not in advice
+
+
+def test_a_good_clock_rules_itself_out():
+    advice = "\n".join(capacity.auth_advice(2.0))
+    assert "Two things" in advice
+    assert "so it is not that" in advice
+
+
+def test_an_unknown_clock_leaves_both_causes_open():
+    advice = "\n".join(capacity.auth_advice(None))
+    assert "Two things" in advice
+    assert "could not be checked" in advice
+
+
+def test_an_authorization_failure_explains_itself_in_the_report(tmp_path):
+    """The bare iperf3 message names neither of its two causes."""
+    write(tmp_path, "up.json", AUTH_FAILED)
+    write(tmp_path, "down.json", AUTH_FAILED)
+    out = capacity.render(tmp_path, configured_up="1.5M", configured_down="300k",
+                          udp_rate=None, skew_s=-847.0)
+    assert "test authorization failed" in out     # what iperf3 said
+    assert "timesyncd" in out                     # and what to do about it
+
+
+def test_a_working_run_carries_no_auth_advice(tmp_path):
+    write(tmp_path, "up.json", TCP_DOC)
+    write(tmp_path, "down.json", TCP_DOC)
+    out = capacity.render(tmp_path, configured_up="1.5M", configured_down="300k",
+                          udp_rate=None, skew_s=0.0)
+    assert "rejected the credentials" not in out
