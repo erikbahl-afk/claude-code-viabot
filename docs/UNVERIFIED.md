@@ -164,6 +164,14 @@ What would settle it: the robot's configured camera bitrate from the Formant
 console, and `./scripts/capacity_test.sh --udp 5M` at a weak spot to find out
 whether 5 Mbit/s is even available to offer.
 
+**The radio score's bands are conventions, not requirements.** poor / fair /
+good / excellent are cut at the figures the industry generally uses for LTE
+(RSRP -120..-70 dBm, SINR -5..25 dB). Nothing has checked them against what this
+robot needs, exactly like the dead-zone thresholds. The survey does measure
+usability directly on the same seconds, so one real walk can finally test the
+assumption underneath the score: **does the radio score predict whether teleop
+actually works?** If it does not, the bands are wrong, not the link.
+
 **The throughput plot is not a speed test, and the report says so.** The rig
 holds a UDP stream open at the bitrate a teleop session really uses and records
 what arrived each second. So the plot's ceiling is the rate that was *offered*

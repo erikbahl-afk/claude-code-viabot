@@ -169,6 +169,17 @@ working and points the blame at the credentials. `capacity_test.sh` reads the
 server's clock off an HTTPS `Date:` header before testing, and `udpload.parse_error()`
 spells out both causes.
 
+**The radio score is the worse of two numbers, never the average.** RSRP says
+how much of the cell's signal arrives; SINR says how much of what arrives is
+signal rather than noise. They fail independently and need different remedies —
+weak-but-clean is a coverage hole an antenna can help, strong-but-dirty is
+interference no antenna touches — so `radio.rate()` takes the minimum and names
+the limiting half. An average lets a strong signal hide a filthy one, which is
+the exact case a survey exists to find. RSSI and RSRQ are deliberately *not* in
+the score: the four numbers carry two degrees of freedom, and those two restate
+the relationship between the other two. The band cut points are the conventional
+LTE ones and are **unvalidated for this robot** — see `docs/UNVERIFIED.md`.
+
 **Timestamps are the product.** Video correlation depends entirely on the system
 clock, and the Pi has no RTC. Preserve `clock_synced` reporting on samples, the
 control page, and the start-of-run warning.
@@ -256,7 +267,8 @@ indoor positioning. Do not make Pause merely cosmetic.
 | `viabot_survey/app.py` | Flask: captive portal, API, report building |
 | `viabot_survey/workers/` | One file per measurement source, all subclass `base.Worker` |
 | `viabot_survey/report.py` | Builds a run's result and renders it as the published page |
-| `viabot_survey/chart.py` | Draws the throughput plot as inline SVG — no library, because the report must open offline |
+| `viabot_survey/chart.py` | Draws the throughput and radio plots as inline SVG — no library, because the report must open offline |
+| `viabot_survey/radio.py` | RSRP + SINR into one 0-100 score, and which of the two is limiting it |
 | `viabot_survey/workers/udpload.py` | Jitter and loss under teleop-sized UDP streams, both directions — the load case ping cannot see |
 | `viabot_survey/publish.py` | Resumable upload client; the receiver's byte count is the authority |
 | `viabot_survey/storage.py` | SQLite; add columns to `SAMPLE_COLUMNS` when extending `samples` |
@@ -274,7 +286,7 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 270 tests, no camera or rig needed
+.venv/bin/python -m pytest        # 281 tests, no camera or rig needed
 ```
 
 Most of the suite runs anywhere: workers are tested through their parsing and

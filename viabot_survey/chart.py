@@ -22,11 +22,21 @@ from __future__ import annotations
 import html
 from typing import Any, Sequence
 
+#: Two slots, used by every chart here, first solid and second dashed.
 #: Distinguishable without colour as well as with it, because these get
 #: printed, photocopied and looked at by people who do not see red and green
-#: apart. Uplink is solid, downlink dashed.
-UPLINK_COLOR = "#1b4d8f"
-DOWNLINK_COLOR = "#b26a00"
+#: apart — and checked rather than eyeballed: this pair passes the lightness
+#: band, the chroma floor, colourblind separation (worst adjacent dE 22.5,
+#: protan) and contrast against the plot surface. A blue/purple pair that
+#: looked fine to me failed deutan separation at dE 3.5.
+SERIES_A = "#2f6fb5"
+SERIES_B = "#b26a00"
+
+UPLINK_COLOR = SERIES_A
+DOWNLINK_COLOR = SERIES_B
+
+#: Where the radio score's words change. Drawn as guides, labelled on the axis.
+RADIO_BANDS = ((75, "excellent"), (50, "good"), (25, "fair"))
 
 _MARGIN_LEFT = 54
 _MARGIN_RIGHT = 16
@@ -256,4 +266,137 @@ def throughput_svg(timeline: dict, *, width: int = 900, height: int = 260) -> st
           'stroke="#646b7a" stroke-width="1"/>'
         + f'<text x="{_MARGIN_LEFT}" y="{_MARGIN_TOP - 5}" text-anchor="start" '
           'font-size="10" fill="#646b7a">Mbit/s delivered</text>'
+        + "".join(legend) + "</svg>")
+
+
+def _bands_and_pauses(timeline: dict, x_edge, top: float, height: float) -> str:
+    """Dead zones and pauses, drawn the same way on every chart here.
+
+    Both plots share an x axis of walked seconds, so a reader can lay one over
+    the other and ask whether a dead zone lines up with the radio collapsing.
+    Drawing these differently on the two would quietly break that.
+    """
+    out = []
+    for start, end in timeline.get("dead_zones") or []:
+        left = x_edge(start)
+        right = max(x_edge(end + 1), left + 1.5)
+        out.append(f'<rect x="{left:.1f}" y="{top}" width="{right - left:.1f}" '
+                   f'height="{height}" fill="#b3261e" fill-opacity="0.10"/>')
+    for column in timeline.get("pauses") or []:
+        out.append(f'<line x1="{x_edge(column):.1f}" y1="{top}" '
+                   f'x2="{x_edge(column):.1f}" y2="{top + height}" '
+                   'stroke="#646b7a" stroke-width="1" stroke-dasharray="2 3"/>')
+    return "".join(out)
+
+
+def radio_svg(timeline: dict, *, width: int = 900, height: int = 260) -> str:
+    """The radio score over the walk, with both halves of it drawn.
+
+    One axis, 0-100, because both series are already scores — plotting raw dBm
+    against raw dB would be two scales on one plot, which invents a
+    relationship the data does not have.
+
+    The score itself is the *lower* of the two lines, so it is drawn as the
+    shaded area beneath them rather than as a third line repeating what the
+    other two already say. What the reader needs to see is not just how bad it
+    is but which of the two is making it so.
+    """
+    columns = int(timeline.get("columns") or 0)
+    if columns <= 0:
+        return ""
+
+    series = [
+        ("strength", "Strength — how much signal arrives (RSRP)", SERIES_A, False),
+        ("quality", "Quality — how much of it is signal, not noise (SINR)",
+         SERIES_B, True),
+    ]
+    present = [s for s in series if (timeline.get(s[0]) or {}).get("mid")]
+    if not present:
+        return ""
+
+    plot_w = width - _MARGIN_LEFT - _MARGIN_RIGHT
+    plot_h = height - _MARGIN_TOP - _MARGIN_BOTTOM
+    per_column = float(timeline.get("seconds_per_column") or 1.0)
+    walked_s = float(timeline.get("walked_s") or columns * per_column)
+
+    def x_of(column: float) -> float:
+        return _MARGIN_LEFT + (column + 0.5) * plot_w / columns
+
+    def x_edge(column: float) -> float:
+        return _MARGIN_LEFT + column * plot_w / columns
+
+    def y_of(value: float) -> float:
+        return _MARGIN_TOP + plot_h * (1.0 - max(0.0, min(100.0, value)) / 100.0)
+
+    grid = []
+    for value in (0, 25, 50, 75, 100):
+        y = y_of(value)
+        grid.append(f'<line x1="{_MARGIN_LEFT}" y1="{y:.1f}" '
+                    f'x2="{width - _MARGIN_RIGHT}" y2="{y:.1f}" '
+                    'stroke="#e3e6ec" stroke-width="1"/>')
+        grid.append(f'<text x="{_MARGIN_LEFT - 8}" y="{y + 4:.1f}" '
+                    'text-anchor="end" font-size="11" fill="#646b7a">'
+                    f'{value}</text>')
+    for value, name in RADIO_BANDS:
+        grid.append(f'<text x="{_MARGIN_LEFT + 6}" y="{y_of(value) - 5:.1f}" '
+                    'font-size="10" fill="#646b7a" fill-opacity="0.85">'
+                    f'{name}</text>')
+
+    step = _time_step(walked_s)
+    at = 0.0
+    while at <= walked_s + 1e-9:
+        grid.append(f'<text x="{x_edge(at / per_column):.1f}" '
+                    f'y="{_MARGIN_TOP + plot_h + 18:.1f}" text-anchor="middle" '
+                    f'font-size="11" fill="#646b7a">{_clock(at)}</text>')
+        at += step
+
+    # The score is the lower of the two, so shade up to it rather than drawing
+    # a third line that would only repeat the minimum.
+    mids = [(timeline.get(name) or {}).get("mid") or [] for name, *_ in present]
+    worst: list[float | None] = []
+    for index in range(columns):
+        values = [m[index] for m in mids
+                  if index < len(m) and m[index] is not None]
+        worst.append(min(values) if values else None)
+    fills = []
+    for start, run in _runs(worst):
+        points = " ".join(f"{x_of(start + i):.1f},{y_of(v):.1f}"
+                          for i, v in enumerate(run))
+        base = (f"{x_of(start + len(run) - 1):.1f},{y_of(0):.1f} "
+                f"{x_of(start):.1f},{y_of(0):.1f}")
+        fills.append(f'<polygon points="{points} {base}" fill="#646b7a" '
+                     'fill-opacity="0.10" stroke="none"/>')
+
+    lines = "".join(
+        _series_paths(timeline[name], columns, x_of, y_of, color, dashed)
+        for name, _label, color, dashed in present)
+
+    legend = []
+    for index, (_name, label, color, dashed) in enumerate(present):
+        y = height - 6 + index * 14
+        dash = ' stroke-dasharray="6 3"' if dashed else ""
+        legend.append(
+            f'<line x1="{_MARGIN_LEFT}" y1="{y}" x2="{_MARGIN_LEFT + 22}" '
+            f'y2="{y}" stroke="{color}" stroke-width="1.8"{dash}/>'
+            f'<text x="{_MARGIN_LEFT + 28}" y="{y + 4}" font-size="11" '
+            f'fill="#16181d">{_e(label)}</text>')
+
+    return (
+        f'<svg class="chart" viewBox="0 0 {width} {height + 26}" '
+        'role="img" width="100%" height="auto" '
+        'xmlns="http://www.w3.org/2000/svg" '
+        f'aria-label="Radio score over {_clock(walked_s)} of walking">'
+        "<title>Radio score over the walk</title>"
+        "<desc>Signal strength and signal quality, each scored 0 to 100, "
+        "against walked time. The shaded area is the lower of the two, which "
+        "is the combined score; red columns are dead zones.</desc>"
+        f'<rect x="{_MARGIN_LEFT}" y="{_MARGIN_TOP}" width="{plot_w}" '
+        f'height="{plot_h}" fill="#ffffff"/>'
+        + _bands_and_pauses(timeline, x_edge, _MARGIN_TOP, plot_h)
+        + "".join(grid) + "".join(fills) + lines
+        + f'<line x1="{_MARGIN_LEFT}" y1="{_MARGIN_TOP + plot_h}" '
+          f'x2="{width - _MARGIN_RIGHT}" y2="{_MARGIN_TOP + plot_h}" '
+          'stroke="#646b7a" stroke-width="1"/>'
+        + f'<text x="{_MARGIN_LEFT}" y="{_MARGIN_TOP - 5}" text-anchor="start" '
+          'font-size="10" fill="#646b7a">Radio score (0-100)</text>'
         + "".join(legend) + "</svg>")
