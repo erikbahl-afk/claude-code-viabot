@@ -196,6 +196,17 @@ still showing the update as available. `/api/health` reports `started_at`, and
 the page waits for it to *change*. Anything new that waits for the rig to come
 back must do the same.
 
+**The report is written before the full video exists, so the page asks.** The
+recording is uploaded later, on request, and nothing re-renders the report when
+it lands — `render_html(full_video=...)` is never passed True by anything. So
+the page carries the player hidden and the offer visible, and a same-origin
+`HEAD video/full.mp4` on load swaps them. No script, or opened from a USB stick,
+falls back to the offer. Do not give an element outside the tab bar the `tab`
+class: the tab script selects `.tabs [data-tab]` now, but it used to select
+`.tab`, and the request button wearing that class threw inside `show()` on every
+report — killing everything later in the script while the page still looked
+right.
+
 **Camera failure must be impossible to miss.** A rig whose camera has died is
 still cheerfully reporting connection quality, and the entire walk is wasted.
 It gets a health chip *and* a full-width alert.
@@ -251,7 +262,7 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 263 tests, no camera or rig needed
+.venv/bin/python -m pytest        # 270 tests, no camera or rig needed
 ```
 
 Most of the suite runs anywhere: workers are tested through their parsing and

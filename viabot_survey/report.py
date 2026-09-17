@@ -430,6 +430,12 @@ a { color: var(--accent); }
 .empty { color: var(--muted); background: var(--card); border: 1px solid var(--line);
          border-radius: 10px; padding: 26px; text-align: center; }
 video { width: 100%; border-radius: 10px; background: #000; }
+.btn {
+  appearance: none; font: inherit; font-weight: 600; cursor: pointer;
+  background: var(--card); color: var(--accent);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 18px;
+}
+.btn:hover { border-color: var(--accent); }
 .chartbox { background: var(--card); border: 1px solid var(--line);
             border-radius: 10px; padding: 10px 12px 4px; margin: 6px 0 4px;
             overflow-x: auto; }
@@ -449,12 +455,16 @@ footer { color: var(--muted); font-size: 13px; margin-top: 48px;
 
 SCRIPT = """
 (function () {
-  var tabs = document.querySelectorAll('.tab');
+  // Scoped to the tab bar. A button elsewhere on the page that merely looks
+  // like a tab is not one, and picking it up here threw on every report —
+  // aborting show() and everything after it in this script.
+  var tabs = document.querySelectorAll('.tabs [data-tab]');
   function show(name) {
     tabs.forEach(function (t) {
       var on = t.dataset.tab === name;
       t.setAttribute('aria-selected', on ? 'true' : 'false');
-      document.getElementById('panel-' + t.dataset.tab).hidden = !on;
+      var panel = document.getElementById('panel-' + t.dataset.tab);
+      if (panel) panel.hidden = !on;
     });
     if (history.replaceState) history.replaceState(null, '', '#' + name);
   }
@@ -462,6 +472,20 @@ SCRIPT = """
     t.addEventListener('click', function () { show(t.dataset.tab); });
   });
   show(location.hash === '#detail' ? 'detail' : 'result');
+
+  // The full recording is uploaded after this page was written, so the only
+  // way to know whether it is there is to ask for it. A plain same-origin
+  // HEAD: no library, nothing fetched from anywhere else, and a failure just
+  // leaves the request button showing.
+  var offer = document.getElementById('videoOffer');
+  var player = document.getElementById('videoPlayer');
+  if (offer && player && window.fetch) {
+    fetch('video/full.mp4', { method: 'HEAD' }).then(function (response) {
+      if (!response.ok) return;
+      offer.hidden = true;
+      player.hidden = false;
+    }).catch(function () {});
+  }
 })();
 """
 
@@ -609,23 +633,34 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
                       'for the whole walk.</div>')
 
     # -- tab two: the evidence ----------------------------------------------
+    #
+    # This page is written when the walk ends, and the full recording is
+    # uploaded later — on request, and only when the rig is next idle. So the
+    # page cannot know at the time it is built whether the video is there. It
+    # carries both answers and asks for the file on load; without script, or
+    # opened from a USB stick, it falls back to the offer, which is what it
+    # showed before this existed.
+    player = (f'<video controls preload="metadata"{"" if full_video else " "}'
+              f'src="{FULL_VIDEO}"></video>'
+              f'<p class="sub"><a href="{FULL_VIDEO}">Download the full '
+              'recording</a></p>')
+    offer = (
+        '<div class="empty"><p>The full walk recording is still on the rig.</p>'
+        '<p class="sub">Clips of each dead zone were uploaded automatically; '
+        'the whole recording is several hundred megabytes and goes over the '
+        'same cellular link the rig is there to measure, so it is fetched '
+        'only when asked for.</p>'
+        '<form method="post" action="request-video">'
+        '<button class="btn" type="submit">Request the full video</button>'
+        "</form>"
+        '<p class="sub">The rig uploads it the next time it is powered on and '
+        'not walking. It can take several minutes over a cellular link; this '
+        'page shows the video as soon as it has arrived.</p></div>')
     if full_video:
-        video_block = (f'<video controls preload="metadata" src="{FULL_VIDEO}"></video>'
-                       f'<p class="sub"><a href="{FULL_VIDEO}">Download the full '
-                       'recording</a></p>')
+        video_block = f'<div id="videoPlayer">{player}</div>'
     else:
-        video_block = (
-            '<div class="empty"><p>The full walk recording is still on the rig.</p>'
-            '<p class="sub">Clips of each dead zone were uploaded automatically; '
-            'the whole recording is several hundred megabytes and goes over the '
-            'same cellular link the rig is there to measure, so it is fetched '
-            'only when asked for.</p>'
-            '<form method="post" action="request-video">'
-            '<button class="tab" type="submit" style="border:1px solid var(--line);'
-            'border-radius:8px;padding:8px 18px;color:var(--accent)">'
-            'Request the full video</button></form>'
-            '<p class="sub">The rig uploads it the next time it is powered on and '
-            'not walking.</p></div>')
+        video_block = (f'<div id="videoPlayer" hidden>{player}</div>'
+                       f'<div id="videoOffer">{offer}</div>')
 
     latency = "".join([
         _spread_row("Round trip", quality.get("rtt_ms"), " ms"),

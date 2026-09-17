@@ -386,3 +386,52 @@ def test_the_receiver_refuses_to_serve_surveys_with_no_password(receiver, monkey
     monkeypatch.delenv("VIABOT_RECEIVER_ALLOW_PUBLIC", raising=False)
     monkeypatch.setattr("sys.argv", ["viabot_receiver.py"])
     assert receiver.main() == 2
+
+
+# ---- asking for the full video ---------------------------------------------
+
+def _run_with_report(receiver, run_id: str = "20260917-144217-office-test-07"):
+    directory = receiver.DATA_DIR / "runs" / run_id
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "index.html").write_text("<!doctype html><title>report</title>")
+    receiver.write_meta(run_id, {"label": "Office test"})
+    return directory
+
+
+def test_asking_for_the_video_says_so(receiver):
+    """It used to redirect straight back to the report — which is the static
+    page the rig uploaded, so it came back identical, with the same button.
+    The only way to tell the press had worked was to read a database on the
+    rig, and the natural response to that is to press it again."""
+    _run_with_report(receiver)
+    with receiver.app.test_client() as client:
+        response = client.post(
+            "/r/20260917-144217-office-test-07/request-video")
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "Asked for" in body
+    assert "Back to the report" in body
+
+
+def test_the_ask_is_recorded_for_the_rig_to_find(receiver):
+    _run_with_report(receiver)
+    with receiver.app.test_client() as client:
+        client.post("/r/20260917-144217-office-test-07/request-video")
+    meta = receiver.read_meta("20260917-144217-office-test-07")
+    assert meta["requests"]["full_video"] is True
+    assert meta["requests"]["asked_at"] > 0
+
+
+def test_asking_for_a_video_that_already_arrived_says_that_instead(receiver):
+    """Pressing again is exactly what someone does when nothing seemed to
+    happen the first time, and by then the file may already be here."""
+    directory = _run_with_report(receiver)
+    (directory / "video").mkdir()
+    (directory / "video" / "full.mp4").write_bytes(b"not really an mp4")
+    with receiver.app.test_client() as client:
+        response = client.post(
+            "/r/20260917-144217-office-test-07/request-video")
+    body = response.get_data(as_text=True)
+    assert "already here" in body
+    # And it must not re-ask the rig for something it has already sent.
+    assert "requests" not in receiver.read_meta("20260917-144217-office-test-07")
