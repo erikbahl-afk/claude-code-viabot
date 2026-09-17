@@ -17,6 +17,14 @@ ROOT="$(repo_root)"
 cd "$ROOT"
 
 CONFIG="$ROOT/config/config.yaml"
+
+# The dashboard asks for an update by creating this file, which viabot-update.path
+# is watching. Remove it immediately: while it exists systemd will not fire the
+# path unit again, so leaving it behind would mean the *next* press does nothing.
+DATA_DIR="$(yaml_get "$CONFIG" storage data_dir)"
+[[ -n "$DATA_DIR" ]] || DATA_DIR="data"
+[[ "$DATA_DIR" = /* ]] || DATA_DIR="$ROOT/$DATA_DIR"
+rm -f "$DATA_DIR/update-requested"
 REMOTE="origin"; BRANCH="main"
 if [[ -f "$CONFIG" ]]; then
   R="$(yaml_get "$CONFIG" update remote)"; [[ -n "$R" ]] && REMOTE="$R"

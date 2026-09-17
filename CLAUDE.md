@@ -128,6 +128,16 @@ Start / Pause / End, a small connection readout, and rig health — nothing else
 Results are read on a laptop afterwards. Resist adding reports, charts or video
 to the phone; the screen is small and he is walking.
 
+**The app cannot use `sudo`, and never could.** `viabot-survey.service` runs
+with `CapabilityBoundingSet=CAP_NET_BIND_SERVICE`; a bounding set without
+`CAP_SETUID`/`CAP_SETGID` makes sudo fail outright — *"unable to change to root
+gid: Operation not permitted"*. The identical command from a login shell
+succeeds, which is what hid this for so long: every manual test of "Apply
+update" passed while the button did nothing. So the app asks for an update by
+creating `<data_dir>/update-requested`, and `viabot-update.path` starts the
+update. Anything else the app needs from systemd must go the same way; do not
+add a sudo call to the app and test it over SSH.
+
 **"The rig replied" does not mean the rig restarted.** `update.sh` fetches,
 installs, and only then restarts the service — and the *old* process answers
 `/api/health` perfectly happily throughout. The dashboard used to reload on the
@@ -191,7 +201,7 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 249 tests, no camera or rig needed
+.venv/bin/python -m pytest        # 251 tests, no camera or rig needed
 ```
 
 Most of the suite runs anywhere: workers are tested through their parsing and
