@@ -125,3 +125,40 @@ def test_a_clean_walk_does_not_show_an_empty_table():
     page = report.render_html(dict(REPORT, dead_zones=[], runnable_pct=100.0,
                                    summary={"dead_zone_count": 0}))
     assert "No dead zones" in page
+
+
+# ---- a direction that produced nothing -------------------------------------
+
+def _short_walk(seconds: int = 23) -> list[dict]:
+    """A walk too short for one uplink block: downlink streams, uplink cannot."""
+    return [{"ts": BASE + i, "rtt_ms": 30.0, "loss_pct": 0.0,
+             "udp_down_loss_pct": 0.0, "udp_down_jitter_ms": 1.6,
+             "udp_down_mbps": 0.3} for i in range(seconds)]
+
+
+def test_an_unmeasured_direction_is_never_silently_dropped():
+    """Uplink decides whether a spot is workable. A section that simply is not
+    there reads as 'nothing to report', which is the opposite of the truth."""
+    stats = report.load_stats(_short_walk(), {"uplink_block_s": 30})
+    assert stats["uplink"]["seconds_measured"] == 0
+    assert "23s" in stats["uplink"]["absent_reason"]
+    assert "30s" in stats["uplink"]["absent_reason"]
+
+
+def test_the_page_says_why_uplink_is_missing():
+    built = dict(REPORT, under_load=report.load_stats(
+        _short_walk(), {"uplink_block_s": 30}))
+    page = report.render_html(built)
+    assert "Not measured on this run" in page
+    assert "Walk for a few minutes" in page
+    # The half that did work is still shown in full.
+    assert "Downlink" in page
+
+
+def test_a_long_walk_with_no_uplink_blames_the_server_not_the_operator():
+    """Telling someone to walk for longer when they walked for ten minutes
+    sends them to do the wrong thing."""
+    stats = report.load_stats(_short_walk(600), {"uplink_block_s": 30})
+    reason = stats["uplink"]["absent_reason"]
+    assert "Walk for a few minutes" not in reason
+    assert "event log" in reason

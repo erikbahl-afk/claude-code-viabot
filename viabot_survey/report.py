@@ -154,7 +154,33 @@ def quality_stats(samples: Sequence[dict]) -> dict[str, Any]:
     }
 
 
-def load_stats(samples: Sequence[dict]) -> dict[str, Any]:
+def _absent_reason(direction: str, walked_s: int, block_s: float) -> str:
+    """Why a direction has nothing, in terms of what the operator did.
+
+    Uplink loss can only be counted at the far end, so the rig runs a fixed
+    block and then asks the server what arrived. A block that does not finish
+    reports nothing at all — which means a walk shorter than one block produces
+    no uplink data whatsoever, and the old report simply left the section out.
+    Silently dropping the half that decides whether a spot is workable is worse
+    than saying "not measured".
+    """
+    if direction == "uplink" and walked_s < block_s * 1.5:
+        return (
+            f"The walk lasted {walked_s}s. Uplink is measured in blocks of "
+            f"{block_s:g}s and only reports once a block finishes, so this one "
+            "was cut off before it could. Walk for a few minutes to get uplink "
+            "readings."
+        )
+    if direction == "uplink":
+        return ("No readings came back from the server. The test runs in "
+                f"{block_s:g}s blocks and asks the far end what arrived; check "
+                "the event log for what the load test said.")
+    return ("The stream never produced a reading. Check the event log for what "
+            "the load test said.")
+
+
+def load_stats(samples: Sequence[dict],
+               load_config: dict | None = None) -> dict[str, Any]:
     """What the link did with a real teleop load on it, each way separately.
 
     A teleop session is asymmetric and the two halves fail differently. Uplink
@@ -168,11 +194,16 @@ def load_stats(samples: Sequence[dict]) -> dict[str, Any]:
     stops rather than reporting 100% loss — silence is the severe case, not a
     gap in the data.
     """
+    config = load_config or {}
+    block_s = float(config.get("uplink_block_s") or 30)
     out: dict[str, Any] = {}
     for name, prefix in (("uplink", "udp_up_"), ("downlink", "udp_down_")):
         readings = [s for s in samples if s.get(prefix + "loss_pct") is not None]
         if not readings:
-            out[name] = {"seconds_measured": 0}
+            out[name] = {
+                "seconds_measured": 0,
+                "absent_reason": _absent_reason(name, len(samples), block_s),
+            }
             continue
         losses = _numbers(readings, prefix + "loss_pct")
         out[name] = {
@@ -340,7 +371,7 @@ def build_report(storage: Any, run: dict,
         "throughput": storage.list_throughput(run["id"]),
         "signal": signal_stats(samples),
         "quality": quality_stats(samples),
-        "under_load": load_stats(samples),
+        "under_load": load_stats(samples, load_config),
         "timeline": throughput_timeline(samples, zones, load_config),
     }
 
@@ -627,10 +658,20 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
              "Usually the half that decides whether a spot is workable: cellular "
              "uplink is the weaker direction, and this is the heavy stream."),
             ("downlink", "Downlink &mdash; the operator's commands coming in",
-             "Small, but if it collapses the robot stops taking orders."),
+             "The real command stream is tiny, and this is deliberately tested "
+             "far above it, so a clean result here means the commands would "
+             "get through with a great deal to spare. The dashed line on the "
+             "chart is the rate actually sent."),
         ):
             half = load.get(name) or {}
             if not half.get("seconds_measured"):
+                # Never silently. Uplink is the half that decides whether a
+                # spot is workable, and an absent section reads as "fine".
+                sections.append(
+                    f"<h3>{heading}</h3><p class=\"sub\">{blurb}</p>"
+                    '<div class="empty"><p>Not measured on this run.</p>'
+                    f'<p class="sub">{_e(half.get("absent_reason") or "")}</p>'
+                    "</div>")
                 continue
             sections.append(
                 f"<h3>{heading}</h3><p class=\"sub\">{blurb}</p>"

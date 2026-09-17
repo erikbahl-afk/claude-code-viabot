@@ -170,21 +170,29 @@ udp_load:
   # server runs one test at a time, so the two directions cannot share one.
   uplink_enabled: true
   uplink_port: 5201
-  # Deliberately about twice what a real session was measured using.
+  # A deliberate compromise between two numbers, neither of them certain.
   #
   # MEASURED from a live Formant teleop session, 2026-09-12: the robot sent
   # 645 kbit/s mean, 672 median, 744 at the 95th, 764 peak over a 37-second
-  # window. 1.5M is 2.3x that mean and essentially twice the peak.
+  # window — one robot, one camera, one short capture.
   #
-  # Testing above the real rate is the safe direction to be wrong in: a spot
-  # that carries 1.5 Mbit/s certainly carries 650 kbit/s, so a garage this
-  # test passes is genuinely workable, and one it fails is worth looking at
-  # rather than dismissing. It also leaves room for a robot with a higher
-  # resolution camera than the one measured.
+  # AGAINST that, 5 Mbit/s up has been quoted for teleop from memory, with no
+  # source. If that is right, a test at the measured rate would pass garages
+  # where a real multi-camera session falls apart.
   #
-  # This is not a Formant *specification* — it is what one robot's camera
-  # settings produced. Re-measure if the resolution or frame rate changes.
-  uplink_bitrate: 1.5M
+  # 3M is ~4.6x the measured session and sits at roughly two thirds of this
+  # link's own uplink ceiling, which was 4.48 Mbit/s at a good spot on
+  # 2026-09-17. That last part is the constraint that matters: this is a
+  # *continuous* load and ping runs alongside it, so a rate at or above the
+  # link's ceiling would saturate the uplink for the whole walk and invent
+  # dead zones that the garage did not cause. Testing high is the safe
+  # direction only up to the point where the test becomes the failure.
+  #
+  # Raise this only with a measurement of what the robot really sends with
+  # every camera an operator would open. To ask "could this spot carry 5
+  # Mbit/s" without disturbing a survey, use:
+  #     ./scripts/capacity_test.sh --udp 5M
+  uplink_bitrate: 3M
   # Seconds per block. Shorter recovers readings sooner after a dead spot;
   # longer spends less time re-establishing the test.
   uplink_block_s: 30
@@ -194,14 +202,20 @@ udp_load:
   # receiving end here, so these readings arrive live, once a second.
   downlink_enabled: true
   downlink_port: 5202
-  # The operator sent 64 kbit/s mean, 104 peak in the same session — this is
-  # control and telemetry, and it is tiny.
+  # The operator sent 64 kbit/s mean, 104 peak in the same session — control
+  # and telemetry, and tiny.
   #
-  # 300k rather than ~150k on purpose. Loss is counted in whole datagrams, so
-  # at 1200 bytes a 150 kbit/s stream is only ~15 packets a second and a single
-  # loss reads as 6.7%. 300k roughly doubles the resolution for an amount of
-  # traffic that is still negligible next to the uplink.
-  downlink_bitrate: 300k
+  # 5M is therefore not a model of that stream; it is a headroom check. It is
+  # affordable because downlink is the strong direction: 29.4 Mbit/s measured
+  # on 2026-09-17, so 5M is about a sixth of it and leaves ping plenty of
+  # room. A clean result here means the commands would get through with a
+  # great deal to spare, and it costs a direction that was otherwise telling
+  # us almost nothing.
+  #
+  # Do not copy this reasoning to the uplink. There the same rate would be at
+  # the link's ceiling, and the test would manufacture the dead zones it is
+  # supposed to find.
+  downlink_bitrate: 5M
 
 # ----------------------------------------------------------------------------
 # ----------------------------------------------------------------------------

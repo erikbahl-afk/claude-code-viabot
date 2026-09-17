@@ -60,13 +60,25 @@ for nothing and competes with the publisher sending the last run's clips, and
 left running through a pause it contradicts what Pause means. The runner starts
 and stops it alongside the camera, for the same reasons.
 
-**`udp_load` bitrates are measured, not guessed — but from one session.** A
-live Formant teleop session on 2026-09-12 sent **645 kbit/s mean, 764 peak**
-robot-to-operator and **64 kbit/s mean, 104 peak** the other way. Hence
-`uplink_bitrate: 1.5M` (deliberately about twice the measured rate — testing
-high is the safe direction to be wrong in) and `downlink_bitrate: 300k`. That is what one robot's
-camera settings produced over 37 seconds, not a Formant specification —
-re-measure if the resolution or frame rate changes.
+**`udp_load` bitrates are a compromise, and the uplink one has a hard ceiling
+above it.** A live Formant teleop session on 2026-09-12 sent **645 kbit/s mean,
+764 peak** robot-to-operator and **64 kbit/s mean, 104 peak** the other way —
+one robot, one camera, 37 seconds. Against that, 5 Mbit/s up has been quoted for
+teleop from memory, unsourced. `uplink_bitrate: 3M` splits them: ~4.6x the
+measured session, and about two thirds of this link's own measured uplink
+ceiling of **4.48 Mbit/s** (2026-09-17, good signal).
+
+That ceiling is the constraint. The load is *continuous* and ping runs alongside
+it, so a rate at or above the link's capacity saturates the uplink for the whole
+walk and manufactures dead zones the garage did not cause. **Testing high is the
+safe direction only up to the point where the test becomes the failure.** Raise
+it only from a measurement of what a robot really sends with every camera an
+operator would open; to ask "could this spot carry 5 Mbit/s" without disturbing
+a survey, use `./scripts/capacity_test.sh --udp 5M`.
+
+`downlink_bitrate: 5M` is not a model of anything — the real command stream is
+64 kbit/s. It is a headroom check, affordable only because downlink measured
+29.4 Mbit/s. Do not copy that reasoning to the uplink.
 
 **Formant carries everything over WebRTC data channels, not media tracks.**
 There is no `inbound-rtp` or `outbound-rtp` anywhere in a session dump, which
@@ -109,6 +121,14 @@ samples intact but no result recorded. At one row a second the cost is not
 measurable. For the same reason an interrupted run is analysed on the next
 startup rather than merely closed: everything up to the cut is good data, and
 discarding it means driving back to the garage.
+
+**A walk shorter than one uplink block measures no uplink at all.** Uplink loss
+is only countable at the far end, so the rig runs a fixed block
+(`uplink_block_s`, 30 s) and then asks the server what arrived — a block cut
+short by the run ending reports nothing. A 23-second test walk therefore has a
+full downlink trace and no uplink whatsoever, and the report used to drop the
+section rather than say so. It now says why. The same applies to the tail of
+every real walk: up to one block's worth of uplink is lost at the end.
 
 **A worker that finishes its work is not a worker that failed.** `Worker._loop`
 backs off exponentially between restarts, which is right for something that
@@ -231,7 +251,7 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 260 tests, no camera or rig needed
+.venv/bin/python -m pytest        # 263 tests, no camera or rig needed
 ```
 
 Most of the suite runs anywhere: workers are tested through their parsing and
