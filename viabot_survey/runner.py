@@ -128,6 +128,11 @@ class SurveyRunner:
         load = config["udp_load"]
         common = dict(
             server=load["server"],
+            # Pin the uplink, exactly as ping does. Without this the test
+            # follows the routing table, which happens to be right today and
+            # would silently stop being right the moment the Pi gained a
+            # second route.
+            interface=uplink.get("interface"),
             datagram_bytes=load["datagram_bytes"],
             run_data_budget_mb=load["run_data_budget_mb"],
             username=load["username"],
@@ -430,7 +435,8 @@ class SurveyRunner:
     def _report_bundle(self, run_id: str) -> tuple[Path, dict]:
         """Where a run's publishable files are built, and the report itself."""
         run = self.storage.get_run(run_id)
-        built = report.build_report(self.storage, run) if run else {}
+        built = (report.build_report(self.storage, run, self.config["udp_load"])
+                 if run else {})
         return Path(self.config.data_dir) / "reports" / run_id, built
 
     def queue_for_publishing(self, run_id: str) -> int:

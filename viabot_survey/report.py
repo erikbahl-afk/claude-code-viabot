@@ -17,10 +17,15 @@ years from now when whatever CDN was fashionable this month has gone.
 
 from __future__ import annotations
 
+import bisect
 import html
 import json
+import math
 import time
 from typing import Any, Iterable, Sequence
+
+from . import chart
+from .workers.udpload import parse_bitrate_mbps
 
 #: Files are laid out beside the report when it is published, so every link in
 #: the page is relative and the whole bundle can be moved or copied intact.
@@ -184,7 +189,125 @@ def load_stats(samples: Sequence[dict]) -> dict[str, Any]:
     return out
 
 
-def build_report(storage: Any, run: dict) -> dict[str, Any]:
+#: Columns the throughput plot is bucketed into. A walk is sampled at 1 Hz, so
+#: an hour underground is 3,600 readings per direction — more than a 900-pixel
+#: plot can show and more than belongs in a page that has to be uploaded over
+#: the link it is describing. Each column then covers several seconds, and
+#: keeps that span's worst, median and best rather than an average, because an
+#: average hides exactly the second the video would have dropped.
+TIMELINE_COLUMNS = 600
+
+#: Consecutive samples further apart than this mean the run was paused. Pause
+#: leaves no samples at all, so wall-clock time would draw a ten-minute coffee
+#: break as a ten-minute outage. The plot runs on *walked* time instead, one
+#: second per sample, and marks where the pauses were.
+PAUSE_GAP_S = 3.0
+
+
+def _bucket(values: Sequence[float | None], per: int) -> dict[str, list]:
+    """Group a per-second series into columns of ``per`` seconds each."""
+    lo: list[float | None] = []
+    mid: list[float | None] = []
+    hi: list[float | None] = []
+    seconds: list[int] = []
+    for start in range(0, len(values), per):
+        chunk = [v for v in values[start:start + per] if v is not None]
+        seconds.append(len(chunk))
+        if not chunk:
+            lo.append(None); mid.append(None); hi.append(None)
+            continue
+        lo.append(round(min(chunk), 3))
+        mid.append(round(_median(chunk), 3))
+        hi.append(round(max(chunk), 3))
+    return {"lo": lo, "mid": mid, "hi": hi, "seconds": seconds}
+
+
+def throughput_timeline(samples: Sequence[dict], zones: Sequence[dict] = (),
+                        load_config: dict | None = None,
+                        columns: int = TIMELINE_COLUMNS) -> dict[str, Any]:
+    """What each direction actually delivered, second by second along the walk.
+
+    This is not a speed test and must not be read as one. The rig sends a fixed
+    teleop-sized stream and records what arrived, so the ceiling of this plot is
+    the rate that was *offered* — the shape worth looking at is where it falls
+    short of it, and where it stops altogether.
+
+    Returns {} when the run has no load readings at all, which is every run
+    taken before ``udp_load`` was switched on.
+    """
+    total = len(samples)
+    if not total:
+        return {}
+    config = load_config or {}
+    series: dict[str, dict[str, Any]] = {}
+    for name, prefix, key in (("uplink", "udp_up_mbps", "uplink_bitrate"),
+                              ("downlink", "udp_down_mbps", "downlink_bitrate")):
+        values = [s.get(prefix) for s in samples]
+        if not any(v is not None for v in values):
+            continue
+        series[name] = {"values": values,
+                        "offered_mbps": parse_bitrate_mbps(config.get(key))}
+    if not series:
+        return {}
+
+    per = max(1, math.ceil(total / columns))
+    out: dict[str, Any] = {
+        "columns": math.ceil(total / per),
+        "seconds_per_column": per,
+        "walked_s": total,
+    }
+    for name, built in series.items():
+        out[name] = dict(_bucket(built["values"], per),
+                         offered_mbps=built["offered_mbps"])
+
+    # Dead zones and pauses are recorded against the wall clock; the plot runs
+    # on walked time, so both have to be found by where they land in the
+    # sample sequence rather than by when they happened.
+    stamps = [s["ts"] for s in samples]
+    spans: list[list[int]] = []
+    for zone in zones:
+        start = min(bisect.bisect_left(stamps, zone["start_ts"]), total - 1)
+        end = max(start, bisect.bisect_right(stamps, zone["end_ts"]) - 1)
+        span = [start // per, min(end, total - 1) // per]
+        if spans and span[0] <= spans[-1][1] + 1:
+            spans[-1][1] = max(spans[-1][1], span[1])
+        else:
+            spans.append(span)
+    out["dead_zones"] = spans
+    out["pauses"] = sorted({i // per for i in range(1, total)
+                            if stamps[i] - stamps[i - 1] > PAUSE_GAP_S})
+    out["no_stream"] = _no_stream_spans(out, list(series), out["columns"])
+    return out
+
+
+def _no_stream_spans(timeline: dict, measured: Sequence[str],
+                     columns: int) -> list[list[int]]:
+    """Stretches where no direction reported anything at all.
+
+    That is the severe failure, not a hole in the data: iperf3's control
+    channel is TCP, so a link bad enough takes the test down with it and stays
+    silent until it recovers. It is worth drawing, because a stream can
+    collapse without the walk crossing the dead-zone thresholds.
+
+    Stretches touching either end are dropped. The test takes a few seconds to
+    come up at the start of a walk and is stopped at the end of one, and
+    neither is the garage's fault.
+    """
+    down = [all(timeline[name]["seconds"][c] == 0 for name in measured)
+            for c in range(columns)]
+    spans: list[list[int]] = []
+    for column, missing in enumerate(down):
+        if not missing:
+            continue
+        if spans and spans[-1][1] == column - 1:
+            spans[-1][1] = column
+        else:
+            spans.append([column, column])
+    return [s for s in spans if s[0] > 0 and s[1] < columns - 1]
+
+
+def build_report(storage: Any, run: dict,
+                 load_config: dict | None = None) -> dict[str, Any]:
     """A finished run's result: how much of the walk was usable, and where not.
 
     Read on a laptop after the walk, not on the phone during it.
@@ -218,6 +341,7 @@ def build_report(storage: Any, run: dict) -> dict[str, Any]:
         "signal": signal_stats(samples),
         "quality": quality_stats(samples),
         "under_load": load_stats(samples),
+        "timeline": throughput_timeline(samples, zones, load_config),
     }
 
 
@@ -275,6 +399,12 @@ a { color: var(--accent); }
 .empty { color: var(--muted); background: var(--card); border: 1px solid var(--line);
          border-radius: 10px; padding: 26px; text-align: center; }
 video { width: 100%; border-radius: 10px; background: #000; }
+.chartbox { background: var(--card); border: 1px solid var(--line);
+            border-radius: 10px; padding: 10px 12px 4px; margin: 6px 0 4px;
+            overflow-x: auto; }
+/* Below this the axis labels stop being readable, so the box scrolls rather
+   than shrinking the plot into decoration. */
+.chart { display: block; width: 100%; min-width: 620px; height: auto; }
 .mono { font-variant-numeric: tabular-nums; }
 footer { color: var(--muted); font-size: 13px; margin-top: 48px;
          border-top: 1px solid var(--line); padding-top: 14px; }
@@ -472,7 +602,25 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
         _spread_row("DNS lookup", quality.get("dns_ms"), " ms"),
     ])
     load = report.get("under_load") or {}
-    if load.get("seconds_measured"):
+    plot = chart.throughput_svg(report.get("timeline") or {})
+    if plot:
+        # The plot is the shape of the walk; the tables under it are the
+        # numbers. Read together they answer "where did it fail" and "how
+        # badly" without either having to carry both jobs.
+        chart_block = (
+            f'<div class="chartbox">{plot}</div>'
+            '<p class="sub">Delivered rate against walked time, so a pause '
+            'takes up no room on the axis &mdash; the dotted verticals are '
+            'where the walk was paused. The dashed horizontal lines are the '
+            'rates the rig <em>sent</em> at, which is the ceiling here: this '
+            'is not a speed test, it is whether a teleop-sized stream got '
+            'through. Columns shaded red are dead zones. Grey columns are '
+            'seconds when nothing arrived at all &mdash; the link failed '
+            'badly enough to take the test itself down, which is worse '
+            'than a low reading, not missing data.</p>')
+    else:
+        chart_block = ""
+    if load.get("seconds_measured") or plot:
         sections = []
         for name, heading, blurb in (
             ("uplink", "Uplink &mdash; the robot's video going out",
@@ -505,7 +653,7 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
             "teleoperation session uses, rather than on an idle link. Seconds "
             "with <em>no stream at all</em> are the severe case, not missing "
             "data: the link failed badly enough that the test itself could not "
-            "stay up.</p>" + "".join(sections))
+            "stay up.</p>" + chart_block + "".join(sections))
     else:
         load_block = ""
 

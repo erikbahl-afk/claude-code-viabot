@@ -257,7 +257,7 @@ def create_app(config: Config, runner: SurveyRunner, storage: Storage,
         run = storage.get_run(run_id)
         if run is None:
             return jsonify({"error": "unknown run"}), 404
-        return jsonify(build_report(storage, run))
+        return jsonify(build_report(storage, run, config["udp_load"]))
 
     @app.route("/api/runs/<run_id>/report.html")
     def api_run_report_html(run_id: str):
@@ -269,7 +269,7 @@ def create_app(config: Config, runner: SurveyRunner, storage: Storage,
         run = storage.get_run(run_id)
         if run is None:
             return jsonify({"error": "unknown run"}), 404
-        page = render_html(build_report(storage, run),
+        page = render_html(build_report(storage, run, config["udp_load"]),
                            deadzone_config=config["deadzone"],
                            version=__version__)
         return Response(page, mimetype="text/html; charset=utf-8")
