@@ -445,8 +445,13 @@ def _requested_html(run_id: str, meta: dict, back: str,
     label = meta.get("label") or run_id
     if already:
         headline = "The full video is already here."
-        detail = ("It finished uploading earlier. Go back to the report and it "
-                  "will be on the second tab.")
+        # Not "go and look at the report". A report published before the page
+        # learned to check for the video cannot ever show it: uploads are final
+        # once complete, so that page is frozen as it was written. Hand over
+        # the file itself, which works whatever the report looks like.
+        detail = ("It finished uploading earlier. Reports written before "
+                  "2026-09-17 cannot show it inline — a published report "
+                  "cannot be changed — so use the link below.")
     else:
         headline = "Asked for."
         detail = ("The rig picks this up the next time it is powered on and "
@@ -454,11 +459,16 @@ def _requested_html(run_id: str, meta: dict, back: str,
                   "cellular link it measures — several minutes for a long "
                   "walk. Nothing more to do: the report shows the video as "
                   "soon as it arrives.")
+    watch = ""
+    if already:
+        key = f"?k={request.args['k']}" if request.args.get("k") else ""
+        watch = (f'<p><a href="/r/{_esc(run_id)}/video/full.mp4{_esc(key)}">'
+                 "Watch the full recording</a></p>")
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width, initial-scale=1">'
             f'<title>{_esc(label)} — full video</title>'
             f'<style>{_PAGE_CSS}</style></head><body><div class="wrap">'
-            f'<h1>{_esc(headline)}</h1><p>{_esc(detail)}</p>'
+            f'<h1>{_esc(headline)}</h1><p>{_esc(detail)}</p>{watch}'
             f'<p><a href="{_esc(back)}">Back to the report</a></p>'
             f'</div></body></html>')
 

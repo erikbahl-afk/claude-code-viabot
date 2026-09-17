@@ -211,6 +211,18 @@ right.
 still cheerfully reporting connection quality, and the entire walk is wasted.
 It gets a health chip *and* a full-width alert.
 
+**"Apply update" updates the rig only.** `server/viabot_receiver.py` runs on a
+different machine, from `/opt/viabot-receiver`. A change under `server/` needs
+`git pull && sudo ./server/setup.sh --domain ...` on the server itself, and the
+symptom of forgetting is that the merged change appears to do nothing at all.
+Say so in any pull request that touches `server/`.
+
+**A published report can never be changed.** `_append_chunk` treats a complete
+file as final, and `enqueue_upload` leaves a `done` row done — both deliberate,
+so a re-analysis cannot clobber an upload in flight. The consequence is that
+improvements to the report page reach the next walk's report and never the ones
+already uploaded.
+
 **Uploading during a walk would poison the walk.** The publisher sends over
 the same cellular link the survey is measuring, so it idles while a run is
 active and resumes afterwards. `PublisherWorker.busy` is what enforces this;

@@ -433,5 +433,10 @@ def test_asking_for_a_video_that_already_arrived_says_that_instead(receiver):
             "/r/20260917-144217-office-test-07/request-video")
     body = response.get_data(as_text=True)
     assert "already here" in body
+    # A report published before the page learned to look for the video cannot
+    # ever show it — uploads are final — so sending the reader back to the
+    # report is a dead end. Hand over the file itself.
+    assert "/r/20260917-144217-office-test-07/video/full.mp4" in body
+    assert "Watch the full recording" in body
     # And it must not re-ask the rig for something it has already sent.
     assert "requests" not in receiver.read_meta("20260917-144217-office-test-07")
