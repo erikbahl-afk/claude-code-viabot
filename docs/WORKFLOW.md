@@ -104,6 +104,29 @@ cd ~/claude-code-viabot
 
 ---
 
+## Step 4 — only when the change touches the server
+
+**"Apply update" updates the rig and nothing else.** The survey server is a
+different machine: `server/viabot_receiver.py` runs from `/opt/viabot-receiver`
+on the Dallas box, and the rig's update never touches it. A change under
+`server/` therefore needs a second step, or it simply will not take — and the
+symptom is that the thing you just merged still behaves exactly as before.
+
+```bash
+ssh root@viabotsurveys.com
+cd ~/claude-code-viabot && git pull && sudo ./server/setup.sh --domain viabotsurveys.com
+```
+
+Safe to re-run: it leaves the secrets alone unless you pass `--rotate-secrets`,
+which you almost never want, because rotating means updating every rig too.
+
+A pull request that changes anything under `server/` should say so.
+
+**Reports already published do not change.** A finished upload is final — that
+is deliberate, so re-analysing a run cannot overwrite an upload in flight — so
+an improvement to the report page reaches the next walk's report, not the ones
+already on the server.
+
 ## Things worth knowing
 
 **`main` is what the rig runs.** Claude develops on a separate branch so that
