@@ -33,7 +33,7 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from flask import (Flask, Response, abort, jsonify, redirect, request,
+from flask import (Flask, Response, abort, jsonify, request,
                    send_from_directory)
 
 #: Where runs are kept. One directory per run, files inside named as uploaded.
@@ -358,12 +358,25 @@ def request_video(run_id: str):
     meta = read_meta(run_id)
     if not meta:
         abort(404)
+    suffix = f"?k={request.args['k']}" if request.args.get("k") else ""
+    back = f"/r/{run_id}/{suffix}#detail"
+
+    # Already here: the rig sent it and the reader pressed the button anyway,
+    # which is exactly what someone does when nothing seems to happen.
+    if (run_dir(run_id) / "video" / "full.mp4").exists():
+        return Response(_requested_html(run_id, meta, back, already=True),
+                        mimetype="text/html; charset=utf-8")
+
     requests_ = meta.setdefault("requests", {})
     requests_["full_video"] = True
     requests_["asked_at"] = time.time()
     write_meta(run_id, meta)
-    suffix = f"?k={request.args['k']}" if request.args.get("k") else ""
-    return redirect(f"/r/{run_id}/{suffix}#detail", code=303)
+    # Not a bare redirect back to the same page. That is what this used to do,
+    # and the page is the static report the rig uploaded — so it came back
+    # looking identical, with the same button, and the only way to tell the
+    # press had worked was to read a database on the rig.
+    return Response(_requested_html(run_id, meta, back),
+                    mimetype="text/html; charset=utf-8")
 
 
 @app.route("/healthz")
@@ -424,6 +437,30 @@ def _index_html(runs: list[dict]) -> str:
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>ViaBot coverage surveys</title><style>{_PAGE_CSS}</style></head>'
             f'<body><div class="wrap"><h1>Coverage surveys</h1>{body}</div></body></html>')
+
+
+def _requested_html(run_id: str, meta: dict, back: str,
+                    already: bool = False) -> str:
+    """Say the press landed. Anything less and it gets pressed again."""
+    label = meta.get("label") or run_id
+    if already:
+        headline = "The full video is already here."
+        detail = ("It finished uploading earlier. Go back to the report and it "
+                  "will be on the second tab.")
+    else:
+        headline = "Asked for."
+        detail = ("The rig picks this up the next time it is powered on and "
+                  "not walking, then uploads the whole recording over the same "
+                  "cellular link it measures — several minutes for a long "
+                  "walk. Nothing more to do: the report shows the video as "
+                  "soon as it arrives.")
+    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+            f'<title>{_esc(label)} — full video</title>'
+            f'<style>{_PAGE_CSS}</style></head><body><div class="wrap">'
+            f'<h1>{_esc(headline)}</h1><p>{_esc(detail)}</p>'
+            f'<p><a href="{_esc(back)}">Back to the report</a></p>'
+            f'</div></body></html>')
 
 
 def _waiting_html(run_id: str, meta: dict) -> str:

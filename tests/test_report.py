@@ -162,3 +162,44 @@ def test_a_long_walk_with_no_uplink_blames_the_server_not_the_operator():
     reason = stats["uplink"]["absent_reason"]
     assert "Walk for a few minutes" not in reason
     assert "event log" in reason
+
+
+# ---- the full video, which arrives after this page was written -------------
+
+def test_the_page_carries_both_answers_about_the_video():
+    """The report is written when the walk ends; the full recording is
+    uploaded later, on request. So the page cannot know at build time whether
+    the video is there — it carries the player hidden, the offer visible, and
+    asks for the file on load."""
+    page = report.render_html(REPORT)
+    assert 'id="videoPlayer" hidden' in page
+    assert 'id="videoOffer"' in page
+    assert "fetch('video/full.mp4', { method: 'HEAD' })" in page
+
+
+def test_a_report_built_after_the_video_shows_it_outright():
+    page = report.render_html(REPORT, full_video=True)
+    assert 'id="videoPlayer" hidden' not in page
+    assert 'id="videoOffer"' not in page
+
+
+def test_the_page_still_fetches_nothing_from_anywhere_else():
+    """Same-origin HEAD only. The report has to open from a USB stick years
+    from now, and there it simply falls back to the request button."""
+    page = report.render_html(REPORT)
+    assert "http://" not in page.replace('xmlns="http://www.w3.org/2000/svg"', "")
+    assert "https://" not in page
+
+
+def test_the_request_button_is_not_treated_as_a_tab():
+    """It borrowed the tab class for its looks, and the tab script selected on
+    that class — so t.dataset.tab was undefined, getElementById returned null,
+    and show() threw on every report where the video had not been uploaded.
+    The panels happened to be set before the throw, so the page looked fine
+    while everything later in the script never ran."""
+    page = report.render_html(REPORT)
+    assert '<button class="btn" type="submit">' in page
+    # Scoped to the tab bar, so nothing outside it can be mistaken for a tab.
+    assert "document.querySelectorAll('.tabs [data-tab]')" in page
+    # And a tab with no panel can no longer take the script down.
+    assert "if (panel) panel.hidden = !on;" in page
