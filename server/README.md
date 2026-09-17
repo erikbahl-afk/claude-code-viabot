@@ -57,6 +57,53 @@ numbers actually predicted how those felt.
   to pick up next time it is idle. Nothing can reach the rig directly — it sits
   behind carrier NAT — so it asks.
 
+## Getting back onto the one that exists
+
+The live server is `viabotsurveys.com` — a Vultr instance in Dallas, built
+2026-09-14.
+
+```bash
+ssh root@viabotsurveys.com
+```
+
+`root`, not `viabot`: that is the provider's default account, and it is a
+different login from the rig's. The password is in the Vultr control panel
+under the instance overview, unless an SSH key was added.
+
+Things worth knowing once you are in:
+
+| What | Where |
+|---|---|
+| The three secrets | `/etc/viabot-receiver.env` (mode 600, root only) |
+| iperf3 key pair and authorised users | `/etc/viabot/` |
+| Uploaded surveys | `/var/lib/viabot-receiver/` |
+| Service logs | `journalctl -u viabot-receiver -n 50` |
+| iperf3 logs, per port | `journalctl -u viabot-iperf3@5201 -n 50` |
+
+To check the rig's credentials against this box without printing any secret —
+a public key fingerprint is public, and the hash is what this file already
+stores:
+
+```bash
+openssl rsa -in /etc/viabot/iperf3_private.pem -pubout -outform DER \
+  | sha256sum                       # must match the rig's iperf3_public.pem
+cat /etc/viabot/iperf3_users.csv    # user,sha256 of "{user}password"
+```
+
+On the rig, the same two figures:
+
+```bash
+openssl rsa -pubin -in config/iperf3_public.pem -outform DER | sha256sum
+.venv/bin/python -c "
+import hashlib, yaml
+c = yaml.safe_load(open('config/config.yaml'))['udp_load']
+print(c['username'], hashlib.sha256(('{%s}%s' % (c['username'], c['password'])).encode()).hexdigest())"
+```
+
+A mismatched key is the likelier of the two after the server has been re-run
+with `--rotate-secrets`, and it fails exactly like a wrong password:
+`test authorization failed`, with nothing to say which.
+
 ## Standing one up
 
 Any small cloud box will do; the work is I/O, not CPU. A **$5–6/month Vultr or
