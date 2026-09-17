@@ -110,6 +110,15 @@ measurable. For the same reason an interrupted run is analysed on the next
 startup rather than merely closed: everything up to the cut is good data, and
 discarding it means driving back to the garage.
 
+**iperf3 hot-reloads the password but caches the key.** Measured against 3.16:
+the `--authorized-users-path` file is re-read on every connection, so a rotated
+password takes effect at once — but the `--rsa-private-key-path` is read once at
+startup, so a rotated *key* does nothing until the server is restarted, and the
+running server keeps accepting the old one. Rotating on the server therefore
+means restarting `viabot-iperf3@5201` and `@5202` *and* copying the new
+`iperf3_public.pem` to every rig. Miss either and you get "test authorization
+failed" with a password that matches and a clock that is perfect.
+
 **iperf3 authentication fails on a clock, not just on a password.** Every test
 is signed with a timestamp, and a client more than **10 seconds** out is
 rejected — measured against iperf3 3.16: 10s authenticates, 11s does not, and
