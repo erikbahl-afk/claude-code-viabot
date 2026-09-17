@@ -100,6 +100,20 @@ c = yaml.safe_load(open('config/config.yaml'))['udp_load']
 print(c['username'], hashlib.sha256(('{%s}%s' % (c['username'], c['password'])).encode()).hexdigest())"
 ```
 
+**The key and the password behave differently when rotated.** iperf3 re-reads
+the authorised-users file on every connection, so a new password works
+immediately. It reads the RSA private key only at startup, so a new key does
+nothing until the iperf3 servers are restarted — and until then they go on
+accepting the *old* public key:
+
+```bash
+systemctl restart viabot-iperf3@5201 viabot-iperf3@5202
+```
+
+`setup.sh --rotate-secrets` does this for you. Rotating by hand does not, and
+the symptom is "test authorization failed" on a rig whose password matches and
+whose clock is exact.
+
 A mismatched key is the likelier of the two after the server has been re-run
 with `--rotate-secrets`, and it fails exactly like a wrong password:
 `test authorization failed`, with nothing to say which.

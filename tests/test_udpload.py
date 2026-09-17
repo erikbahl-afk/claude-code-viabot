@@ -425,3 +425,52 @@ def test_other_failures_are_passed_through_as_iperf3_worded_them():
 def test_ordinary_output_is_not_mistaken_for_a_failure():
     assert udpload.parse_error(RECEIVER_LINE) is None
     assert udpload.parse_error("") is None
+
+
+# ---- the padding change in iperf3 3.17 -------------------------------------
+
+def test_a_rejection_makes_the_worker_try_the_older_padding(monkeypatch):
+    """3.17 changed the credential encryption from PKCS#1 to OAEP, and the two
+    do not interoperate. The server reports the mismatch as an authorization
+    failure — identical to a wrong password — and says "padding check failed"
+    only in its own log. Nobody should have to read a log on another machine,
+    so the rejection itself is what settles it."""
+    monkeypatch.setattr(udpload, "iperf_supports_pkcs1", lambda: True)
+    worker = UdpLoadWorker(server="example.test", username="rig",
+                           public_key_path="/k")
+    assert udpload.PKCS1_FLAG not in worker.build_command()
+
+    worker._fail_with_reason("iperf3: error - test authorization failed", "quiet")
+    assert udpload.PKCS1_FLAG in worker.build_command()
+
+
+def test_an_older_iperf3_is_never_given_a_flag_it_lacks(monkeypatch):
+    """Before 3.17 there is no flag at all — passing it would break a setup
+    that was working."""
+    monkeypatch.setattr(udpload, "iperf_supports_pkcs1", lambda: False)
+    worker = UdpLoadWorker(server="example.test", username="rig",
+                           public_key_path="/k")
+    worker._fail_with_reason("iperf3: error - test authorization failed", "quiet")
+    assert udpload.PKCS1_FLAG not in worker.build_command()
+
+
+def test_the_fallback_is_tried_once_and_then_reported(monkeypatch):
+    """If the older padding is refused too, it is a real credential problem
+    and must be said out loud rather than retried forever."""
+    monkeypatch.setattr(udpload, "iperf_supports_pkcs1", lambda: True)
+    said: list[tuple[str, str]] = []
+    worker = UdpLoadWorker(server="example.test", username="rig",
+                           public_key_path="/k",
+                           on_event=lambda level, msg: said.append((level, msg)))
+    worker._fail_with_reason("iperf3: error - test authorization failed", "quiet")
+    worker._fail_with_reason("iperf3: error - test authorization failed", "quiet")
+    assert any(level == "error" for level, _ in said)
+
+
+def test_the_padding_can_be_pinned_when_negotiation_is_not_wanted():
+    forced = UdpLoadWorker(server="s", username="u", public_key_path="/k",
+                           auth_padding="pkcs1")
+    assert udpload.PKCS1_FLAG in forced.build_command()
+    modern = UdpLoadWorker(server="s", username="u", public_key_path="/k",
+                           auth_padding="oaep")
+    assert udpload.PKCS1_FLAG not in modern.build_command()

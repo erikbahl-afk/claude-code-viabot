@@ -115,10 +115,16 @@ def auth_advice(skew_s: float | None) -> list[str]:
             "explains this. Fix the clock first:  sudo systemctl restart systemd-timesyncd",
             "This Pi has no RTC, so it starts every boot with no idea of the time.",
         ]
-    lines = ["The server rejected the credentials. Two things do that:",
+    lines = ["The server rejected the credentials. Three things do that:",
              "  1. udp_load.username / password not matching the server's",
              f"  2. the rig's clock being more than {AUTH_SKEW_TOLERANCE_S}s out —",
-             "     iperf3 signs each test with a timestamp, and this Pi has no RTC"]
+             "     iperf3 signs each test with a timestamp, and this Pi has no RTC",
+             "  3. an iperf3 version mismatch. 3.17 changed the credential",
+             "     encryption from PKCS#1 to OAEP and the two do not talk; the",
+             "     server reports it as an authorization failure either way, and",
+             "     only its own log says 'padding check failed'. The check above",
+             "     tries both when this iperf3 is 3.17 or newer — compare",
+             "     'iperf3 --version' on both machines."]
     if skew_s is not None:
         lines.append(f"  (clock checked: {skew_s:+.0f}s against the server, "
                      "so it is not that)")

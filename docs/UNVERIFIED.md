@@ -180,6 +180,21 @@ start warns when the clock is unsynchronised, but nothing watches for NTP
 stepping it *during* a walk. A backward step would put samples out of order and
 break video correlation for everything after it.
 
+**`udp_load` had never measured anything on this rig, and now the reason is
+known.** Not credentials: an iperf3 version mismatch. The rig is 3.18 and the
+Dallas server 3.16, either side of the 3.17 change from PKCS#1 to OAEP
+credential encryption, so every test was rejected as an authorization failure
+while the password, the key and the clock were all provably correct. Fixed by
+falling back to the older padding. Load figures from before 2026-09-17 are
+absent, not zero.
+
+**First real uplink measurement, 2026-09-17:** 3.22 Mbit/s received over 3
+seconds from the bench, on the house router's cellular link. That is *below*
+the 5 Mbit/s that was quoted for teleop, and well above the 645 kbit/s measured
+from a real session — but it is one 3-second test from one spot that is not a
+garage. Re-measure with `./scripts/capacity_test.sh --udp 5M` somewhere weak
+before drawing anything from it.
+
 **`udp_load` may never have measured anything on this rig.** On 2026-09-17 the
 capacity probe came back "test authorization failed" in both directions, which
 is also what the load test would have been hitting silently — the worker only

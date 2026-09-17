@@ -138,6 +138,7 @@ class SurveyRunner:
             username=load["username"],
             password=load["password"],
             public_key_path=load["public_key_path"],
+            auth_padding=load["auth_padding"],
         )
         self.udp_up = UdpLoadWorker(
             direction=UPLINK,

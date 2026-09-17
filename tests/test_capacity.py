@@ -136,19 +136,28 @@ def test_a_skewed_clock_is_named_as_the_cause_rather_than_listed():
     assert "-847s" in advice
     assert "timesyncd" in advice
     # Not a list of possibilities when we already know which one it is.
-    assert "Two things" not in advice
+    assert "Three things" not in advice
 
 
 def test_a_good_clock_rules_itself_out():
     advice = "\n".join(capacity.auth_advice(2.0))
-    assert "Two things" in advice
+    assert "Three things" in advice
     assert "so it is not that" in advice
 
 
-def test_an_unknown_clock_leaves_both_causes_open():
+def test_an_unknown_clock_leaves_the_causes_open():
     advice = "\n".join(capacity.auth_advice(None))
-    assert "Two things" in advice
+    assert "Three things" in advice
     assert "could not be checked" in advice
+
+
+def test_the_version_mismatch_that_actually_happened_is_named():
+    """Every credential correct, clock exact, and still rejected: iperf3 3.17
+    changed the padding and the server reports the mismatch as an
+    authorization failure. Only the server's log says otherwise."""
+    advice = "\n".join(capacity.auth_advice(0.0))
+    assert "3.17" in advice
+    assert "iperf3 --version" in advice
 
 
 def test_an_authorization_failure_explains_itself_in_the_report(tmp_path):

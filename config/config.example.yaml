@@ -145,6 +145,21 @@ udp_load:
   password: ""
   public_key_path: ""
 
+  # How the credentials are encrypted on the wire. iperf3 3.17 changed this
+  # from PKCS#1 v1.5 padding to OAEP, and the two do not interoperate: a newer
+  # client talking to an older server is rejected as an *authorization
+  # failure*, identical to a wrong password, with the real reason ("padding
+  # check failed") appearing only in the server's own log. Ubuntu 24.04 ships
+  # 3.16; Raspberry Pi OS trixie ships 3.18, so the rig is usually the newer
+  # end.
+  #
+  #   auto  — try the modern padding, and fall back once if the server refuses.
+  #           Settles itself, and starts using OAEP again if the server is
+  #           upgraded. Only falls back when this iperf3 has the flag at all.
+  #   oaep  — modern only. Fails against a server older than 3.17.
+  #   pkcs1 — legacy only. Needed only if auto somehow guesses wrong.
+  auth_padding: auto
+
   # --- uplink: the robot's video, going out of the garage -------------------
   # Usually the half that decides whether a spot is workable, because cellular
   # uplink is typically the weaker direction.
