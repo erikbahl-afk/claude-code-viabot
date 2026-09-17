@@ -128,6 +128,14 @@ Start / Pause / End, a small connection readout, and rig health — nothing else
 Results are read on a laptop afterwards. Resist adding reports, charts or video
 to the phone; the screen is small and he is walking.
 
+**"The rig replied" does not mean the rig restarted.** `update.sh` fetches,
+installs, and only then restarts the service — and the *old* process answers
+`/api/health` perfectly happily throughout. The dashboard used to reload on the
+first successful reply, about two seconds in, landing back on the old process
+still showing the update as available. `/api/health` reports `started_at`, and
+the page waits for it to *change*. Anything new that waits for the rig to come
+back must do the same.
+
 **Camera failure must be impossible to miss.** A rig whose camera has died is
 still cheerfully reporting connection quality, and the entire walk is wasted.
 It gets a health chip *and* a full-width alert.
@@ -183,7 +191,7 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 248 tests, no camera or rig needed
+.venv/bin/python -m pytest        # 249 tests, no camera or rig needed
 ```
 
 Most of the suite runs anywhere: workers are tested through their parsing and

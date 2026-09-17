@@ -262,6 +262,13 @@
     }).catch(function () {});
   }
 
+  // Drawn once at load and never again, the update panel would go on claiming
+  // an update was available long after one was applied — from this phone or
+  // any other. Slower than the rest: each call shells out to git.
+  function pollUpdate() {
+    api("/api/update/status").then(renderUpdate).catch(function () {});
+  }
+
   // ---- actions ------------------------------------------------------------
 
   function guard(button, work) {
@@ -337,27 +344,43 @@
   function applyUpdate() {
     if (!window.confirm("Apply the update and restart the rig software?")) return;
     el("btnApplyUpdate").disabled = true;
-    post("/api/update/apply")
-      .then(function () { toast("Updating — the rig will restart"); waitForRestart(); })
-      .catch(function (error) {
-        toast(error.message, true);
-        el("btnApplyUpdate").disabled = false;
+    // Note which process is answering *before* asking for the update. The
+    // update fetches and installs before it restarts anything, and the old
+    // process keeps answering health checks throughout — so "the rig replied"
+    // is not evidence it restarted. Without this the page reloaded about two
+    // seconds in, against the old process, still on the old commit, still
+    // showing the update as available.
+    api("/api/health").then(function (health) {
+      return post("/api/update/apply").then(function () {
+        toast("Updating — this can take a minute over cellular");
+        waitForRestart(health.started_at);
       });
+    }).catch(function (error) {
+      toast(error.message, true);
+      el("btnApplyUpdate").disabled = false;
+    });
   }
 
-  function waitForRestart() {
+  function waitForRestart(previousStart) {
     var attempts = 0;
     var timer = setInterval(function () {
       attempts += 1;
-      api("/api/health").then(function () {
+      // Five minutes. A cellular fetch and a pip install are both slow, and
+      // giving up early on a working update is worse than waiting.
+      if (attempts > 150) {
+        clearInterval(timer);
+        toast("Rig did not come back. Check it over SSH.", true);
+        el("btnApplyUpdate").disabled = false;
+        return;
+      }
+      api("/api/health").then(function (health) {
+        // A different start time is the only proof the service actually went
+        // away and came back. An older rig does not report one, so fall back
+        // to the previous behaviour rather than waiting forever.
+        if (previousStart && health.started_at === previousStart) return;
         clearInterval(timer);
         window.location.reload();
-      }).catch(function () {
-        if (attempts > 60) {
-          clearInterval(timer);
-          toast("Rig did not come back. Check it over SSH.", true);
-        }
-      });
+      }).catch(function () {});
     }, 2000);
   }
 
@@ -379,15 +402,16 @@
 
     pollStatus();
     pollSlow();
-    api("/api/update/status").then(renderUpdate).catch(function () {});
+    pollUpdate();
 
     setInterval(pollStatus, 1000);
     setInterval(pollSlow, 8000);
+    setInterval(pollUpdate, 30000);
 
     // Phones suspend background tabs aggressively. Refresh on return so the
     // operator never acts on a frozen reading.
     document.addEventListener("visibilitychange", function () {
-      if (!document.hidden) { pollStatus(); pollSlow(); }
+      if (!document.hidden) { pollStatus(); pollSlow(); pollUpdate(); }
     });
     window.addEventListener("resize", drawRibbon);
   }
