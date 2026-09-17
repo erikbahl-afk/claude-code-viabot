@@ -658,7 +658,10 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
              "Usually the half that decides whether a spot is workable: cellular "
              "uplink is the weaker direction, and this is the heavy stream."),
             ("downlink", "Downlink &mdash; the operator's commands coming in",
-             "Small, but if it collapses the robot stops taking orders."),
+             "The real command stream is tiny, and this is deliberately tested "
+             "far above it, so a clean result here means the commands would "
+             "get through with a great deal to spare. The dashed line on the "
+             "chart is the rate actually sent."),
         ):
             half = load.get(name) or {}
             if not half.get("seconds_measured"):

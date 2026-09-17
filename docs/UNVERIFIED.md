@@ -131,6 +131,20 @@ means **results from before and after enabling it are not comparable**, and the
 thresholds were conceived for an idle link. Set thresholds after deciding
 whether the load test is on, not before.
 
+**The survey load is 3 Mbit/s up / 5 Mbit/s down as of 2026-09-17, and the
+uplink figure is bounded by the rig, not by the robot.** The choice was between
+645 kbit/s (measured from one real session) and 5 Mbit/s (quoted from memory,
+unsourced). 3M splits them at ~4.6x the measurement — but the reason it is not
+5M is this link's own uplink ceiling of 4.48 Mbit/s at a *good* spot. A
+continuous load at the ceiling saturates the uplink for the whole walk, and
+ping, which is what dead zones are detected from, shares it. The survey would
+then find dead zones it created.
+
+Consequences to hold on to: runs before and after this change are not
+comparable; the provisional thresholds were conceived for an idle link and are
+now further from it than ever; and the right way to settle the rate is still a
+measurement of what a robot sends with every camera an operator would open.
+
 **How much uplink teleop really needs is not settled.** The rig's rate is set
 from one 37-second capture of one robot: 645 kbit/s mean, 764 peak, steady
 around 650-700 with a lid on it — which reads like a configured encoder target

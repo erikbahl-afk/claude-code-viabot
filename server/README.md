@@ -273,8 +273,10 @@ it is working. Downlink readings appear within a second or two.
 
 ### What to set the bitrates to
 
-They are already set from a real measurement — `uplink_bitrate: 1.5M`,
-`downlink_bitrate: 300k`. See `docs/UNVERIFIED.md` for where those came from
+They are already set — `uplink_bitrate: 3M`, `downlink_bitrate: 5M`. The uplink
+figure is bounded by the rig's own link ceiling rather than by the robot's
+demand, because the load is continuous and ping shares the link. See
+`docs/UNVERIFIED.md` for where those came from
 and when to re-measure.
 
 ## Backups
