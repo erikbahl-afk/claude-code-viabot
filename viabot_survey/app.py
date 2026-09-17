@@ -311,9 +311,17 @@ def create_app(config: Config, runner: SurveyRunner, storage: Storage,
             return jsonify({"error": str(exc)}), 500
         return jsonify(result)
 
+    # When *this* process started answering. An update restarts the service,
+    # and the dashboard has no other way to tell "the rig came back" from "the
+    # old process never went away" — which matters because update.sh fetches
+    # and installs for a while before it restarts anything, and answers health
+    # checks perfectly happily the whole time.
+    started_at = time.time()
+
     @app.route("/api/health")
     def api_health():
         return jsonify({"ok": True, "version": __version__,
+                        "started_at": started_at,
                         "run": runner.active_run_id})
 
     return app

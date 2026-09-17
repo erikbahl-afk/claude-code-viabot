@@ -293,3 +293,15 @@ def test_an_accepted_update_still_reports_started(monkeypatch, tmp_path):
         lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], 0, "", ""))
 
     assert up.apply()["started"] is True
+
+
+def test_health_says_when_this_process_started(client):
+    """An update restarts the service, and the dashboard has no other way to
+    tell 'the rig came back' from 'the old process never went away'. update.sh
+    fetches and installs for a while before restarting anything, answering
+    health checks happily throughout — so a reply alone proved nothing, and
+    the page reloaded against the old commit two seconds in."""
+    body = client.get("/api/health").get_json()
+    assert isinstance(body["started_at"], float)
+    # Stable within one process: it is the thing that changes only on restart.
+    assert client.get("/api/health").get_json()["started_at"] == body["started_at"]
