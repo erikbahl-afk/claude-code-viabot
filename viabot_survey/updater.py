@@ -24,8 +24,11 @@ class UpdateError(RuntimeError):
 
 class Updater:
     def __init__(self, repo_root: Path, remote: str = "origin", branch: str = "main",
-                 enabled: bool = True) -> None:
+                 enabled: bool = True, request_path: Path | None = None) -> None:
         self.repo_root = Path(repo_root)
+        #: Touching this file is how the app asks for an update without any
+        #: privileges at all — viabot-update.path is watching it. See apply().
+        self.request_path = Path(request_path) if request_path else None
         self.remote = remote
         self.branch = branch
         self.enabled = enabled
@@ -141,6 +144,24 @@ class Updater:
         # Prefer the systemd unit: it survives this process being restarted by
         # the very script it launched. Fall back to a bare detached process on
         # a dev box with no systemd.
+        # Preferred: leave a file where viabot-update.path is watching, and let
+        # systemd start the update. No privilege is involved, which matters
+        # more than it sounds — this service runs with
+        # CapabilityBoundingSet=CAP_NET_BIND_SERVICE, and a bounding set
+        # without CAP_SETUID/CAP_SETGID makes sudo fail outright ("unable to
+        # change to root gid"). The same sudo works fine from a login shell,
+        # which is exactly what made this so confusing to diagnose: the button
+        # did nothing, and every manual test of the same command succeeded.
+        if self.request_path and _unit_exists("viabot-update.path"):
+            try:
+                self.request_path.parent.mkdir(parents=True, exist_ok=True)
+                self.request_path.touch()
+            except OSError as exc:
+                self._applying_since = None
+                raise UpdateError(
+                    f"could not ask for an update: {exc}") from exc
+            return {"started": True, "command": f"touch {self.request_path}"}
+
         if shutil.which("systemctl") and _unit_exists("viabot-update.service"):
             # --no-block returns as soon as systemd has queued the job, so this
             # can be waited on: what comes back is whether the update was

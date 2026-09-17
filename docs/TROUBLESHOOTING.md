@@ -13,6 +13,43 @@ needing SSH.
 
 ---
 
+## "Apply update" does nothing
+
+The rig stays on the old commit and the dashboard keeps offering the same
+update. Check what the rig is actually on:
+
+```bash
+cd ~/claude-code-viabot && git log --oneline -1
+```
+
+If it has not moved, the update never ran. Before 2026-09-17 the app tried to
+start the updater with `sudo`, which **cannot work** from inside
+`viabot-survey.service`: its capability bounding set has no `CAP_SETUID`, so
+sudo fails with *"unable to change to root gid"*. The same command run over SSH
+succeeds, because a login shell is not restricted — so testing it by hand
+proves nothing.
+
+The fix is `viabot-update.path`, installed by `setup.sh`. A rig that has not
+re-run setup since will not have it:
+
+```bash
+systemctl cat viabot-update.path >/dev/null 2>&1 && echo present || echo MISSING
+```
+
+If it is missing, update and re-provision over SSH, in this order:
+
+```bash
+cd ~/claude-code-viabot
+./scripts/update.sh      # works by hand; it is only the button that was broken
+./scripts/setup.sh       # installs and enables viabot-update.path
+```
+
+After that the dashboard button works on its own. To watch one go past:
+
+```bash
+journalctl -u viabot-update.service -f
+```
+
 ## The Wi-Fi network doesn't appear
 
 ```bash

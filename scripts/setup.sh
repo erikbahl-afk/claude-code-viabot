@@ -281,8 +281,36 @@ StandardError=journal
 UNIT
 )"
 
+# How the dashboard asks for an update. It cannot use sudo: this app runs with
+# CapabilityBoundingSet=CAP_NET_BIND_SERVICE, and a bounding set without
+# CAP_SETUID/CAP_SETGID makes sudo fail with "unable to change to root gid" —
+# while the identical command from a login shell succeeds, which is what made
+# the silent failure so hard to see. So the app creates a file and systemd
+# notices. No privilege, and the bounding set stays as tight as it was.
+#
+# Resolved the same way the app resolves it, so a moved data_dir still matches.
+# Re-run this script after changing data_dir.
+UPDATE_DATA_DIR="$(yaml_get "$ROOT/config/config.yaml" storage data_dir)"
+[[ -n "$UPDATE_DATA_DIR" ]] || UPDATE_DATA_DIR="data"
+[[ "$UPDATE_DATA_DIR" = /* ]] || UPDATE_DATA_DIR="$ROOT/$UPDATE_DATA_DIR"
+
+install_unit viabot-update.path "$(cat <<UNIT
+[Unit]
+Description=Watch for an update requested from the ViaBot dashboard
+Documentation=https://github.com/erikbahl-afk/claude-code-viabot
+
+[Path]
+PathExists=$UPDATE_DATA_DIR/update-requested
+Unit=viabot-update.service
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+)"
+
 # The app triggers its own update and restart, so it needs exactly these two
-# commands and nothing more.
+# commands and nothing more. The sudo grants stay for update.sh itself, which
+# runs under viabot-update.service with no bounding set and does need them.
 SUDOERS=$(cat <<SUDO
 # Installed by ViaBot survey rig setup.sh — narrow, deliberate grants.
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl restart viabot-survey.service
@@ -308,6 +336,7 @@ if ! id -nG "$USER_NAME" | tr ' ' '\n' | grep -qx video; then
 fi
 
 sudo systemctl daemon-reload
+sudo systemctl enable --now viabot-update.path
 sudo systemctl enable --now viabot-survey.service
 ok "viabot-survey.service enabled and started"
 

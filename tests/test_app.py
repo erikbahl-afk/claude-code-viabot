@@ -240,31 +240,71 @@ def test_health_endpoint_is_cheap_and_always_answers(client):
     assert body["ok"] is True
 
 
+def _updater(tmp_path, **kwargs):
+    """A real Updater over a scratch repo root, not a hand-built stand-in."""
+    from viabot_survey.updater import Updater
+
+    (tmp_path / "scripts").mkdir(exist_ok=True)
+    (tmp_path / "scripts" / "update.sh").write_text("#!/bin/sh\n")
+    return Updater(tmp_path, **kwargs)
+
+
+def test_the_dashboard_asks_for_an_update_without_any_privileges(monkeypatch,
+                                                                 tmp_path):
+    """The app cannot use sudo and never could. It runs with
+    CapabilityBoundingSet=CAP_NET_BIND_SERVICE, and a bounding set without
+    CAP_SETUID/CAP_SETGID makes sudo fail outright — while the identical
+    command from a login shell succeeds, which is what hid this for so long.
+    So it leaves a file where viabot-update.path is watching."""
+    from viabot_survey import updater as updater_module
+
+    flag = tmp_path / "data" / "update-requested"
+    up = _updater(tmp_path, request_path=flag)
+    monkeypatch.setattr(updater_module, "_unit_exists", lambda unit: True)
+
+    def refuse(*a, **k):
+        raise AssertionError("apply() must not shell out when the path unit exists")
+
+    monkeypatch.setattr(updater_module.subprocess, "run", refuse)
+    monkeypatch.setattr(updater_module.subprocess, "Popen", refuse)
+
+    assert up.apply()["started"] is True
+    assert flag.exists()
+
+
+def test_a_flag_that_cannot_be_written_is_reported(monkeypatch, tmp_path):
+    from viabot_survey import updater as updater_module
+
+    up = _updater(tmp_path, request_path=tmp_path / "data" / "update-requested")
+    monkeypatch.setattr(updater_module, "_unit_exists", lambda unit: True)
+    monkeypatch.setattr(
+        updater_module.Path, "touch",
+        lambda self, *a, **k: (_ for _ in ()).throw(OSError("read-only file system")))
+
+    with pytest.raises(updater_module.UpdateError) as caught:
+        up.apply()
+    assert "read-only file system" in str(caught.value)
+    assert up._applying_since is None
+
+
 def test_a_refused_update_is_reported_rather_than_claimed_as_started(monkeypatch,
                                                                      tmp_path):
-    """The dashboard used to say an update was under way whether or not
-    anything started. A refused sudo rule or a masked unit then looked
-    identical to success, which is the worst way for this to fail: nothing
-    happens and nothing says so."""
+    """Before the path unit, and still the path an un-migrated rig takes. The
+    dashboard used to say an update was under way whether or not anything
+    started, so a refused sudo rule looked exactly like success: nothing
+    happened, and nothing said so."""
     import subprocess
 
     from viabot_survey import updater as updater_module
 
-    (tmp_path / "scripts").mkdir()
-    script = tmp_path / "scripts" / "update.sh"
-    script.write_text("#!/bin/sh\n")
-
-    up = updater_module.Updater.__new__(updater_module.Updater)
-    up.enabled = True
-    up.repo_root = tmp_path
-    up._applying_since = None
-
+    up = _updater(tmp_path, request_path=None)
     monkeypatch.setattr(updater_module.shutil, "which", lambda name: "/bin/systemctl")
     monkeypatch.setattr(updater_module, "_unit_exists", lambda unit: True)
     monkeypatch.setattr(
         updater_module.subprocess, "run",
         lambda *a, **k: subprocess.CompletedProcess(
-            a[0] if a else [], 1, "", "Failed to start viabot-update.service: Access denied"))
+            a[0] if a else [], 1, "",
+            "Failed to start viabot-update.service: Access denied"))
 
     with pytest.raises(updater_module.UpdateError) as caught:
         up.apply()
@@ -278,14 +318,7 @@ def test_an_accepted_update_still_reports_started(monkeypatch, tmp_path):
 
     from viabot_survey import updater as updater_module
 
-    (tmp_path / "scripts").mkdir()
-    (tmp_path / "scripts" / "update.sh").write_text("#!/bin/sh\n")
-
-    up = updater_module.Updater.__new__(updater_module.Updater)
-    up.enabled = True
-    up.repo_root = tmp_path
-    up._applying_since = None
-
+    up = _updater(tmp_path, request_path=None)
     monkeypatch.setattr(updater_module.shutil, "which", lambda name: "/bin/systemctl")
     monkeypatch.setattr(updater_module, "_unit_exists", lambda unit: True)
     monkeypatch.setattr(

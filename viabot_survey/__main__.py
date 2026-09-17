@@ -55,7 +55,8 @@ def main(argv: list[str] | None = None) -> int:
     storage = Storage(cfg.db_path)
     runner = SurveyRunner(cfg, storage)
     updater = Updater(cfg.repo_root, remote=cfg["update"]["remote"],
-                      branch=cfg["update"]["branch"], enabled=cfg["update"]["enabled"])
+                      branch=cfg["update"]["branch"], enabled=cfg["update"]["enabled"],
+                      request_path=cfg.data_dir / "update-requested")
     app = create_app(cfg, runner, storage, updater)
 
     runner.start()
