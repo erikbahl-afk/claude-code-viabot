@@ -24,7 +24,7 @@ import math
 import time
 from typing import Any, Iterable, Sequence
 
-from . import chart
+from . import chart, radio
 from .workers.udpload import parse_bitrate_mbps
 
 #: Files are laid out beside the report when it is published, so every link in
@@ -253,6 +253,86 @@ def _bucket(values: Sequence[float | None], per: int) -> dict[str, list]:
     return {"lo": lo, "mid": mid, "hi": hi, "seconds": seconds}
 
 
+def radio_timeline(samples: Sequence[dict], zones: Sequence[dict] = (),
+                   columns: int = TIMELINE_COLUMNS) -> dict[str, Any]:
+    """The radio score along the walk, on the same axis as the throughput plot.
+
+    Deliberately the same shape and the same bucketing, so the two charts line
+    up column for column and a reader can ask the question that actually
+    matters: when the link failed, had the radio failed with it?
+    """
+    total = len(samples)
+    if not total:
+        return {}
+    scored = [radio.rate(s) for s in samples]
+    if not any(r["score"] is not None for r in scored):
+        return {}
+
+    per = max(1, math.ceil(total / columns))
+    out: dict[str, Any] = {
+        "columns": math.ceil(total / per),
+        "seconds_per_column": per,
+        "walked_s": total,
+    }
+    for name in ("strength", "quality"):
+        values = [r[name] for r in scored]
+        if any(v is not None for v in values):
+            out[name] = _bucket(values, per)
+
+    out["score"] = _bucket([r["score"] for r in scored], per)
+    # The raw readings as well as the scores: the plot puts dBm on the axis,
+    # because a number an engineer can check against a modem beats a derived
+    # one they have to take on trust.
+    out["rsrp"] = _bucket([s.get("rsrp") for s in samples], per)
+    out["sinr"] = _bucket([s.get("sinr") for s in samples], per)
+    stamps = [s["ts"] for s in samples]
+    spans: list[list[int]] = []
+    for zone in zones:
+        start = min(bisect.bisect_left(stamps, zone["start_ts"]), total - 1)
+        end = max(start, bisect.bisect_right(stamps, zone["end_ts"]) - 1)
+        span = [start // per, min(end, total - 1) // per]
+        if spans and span[0] <= spans[-1][1] + 1:
+            spans[-1][1] = max(spans[-1][1], span[1])
+        else:
+            spans.append(span)
+    out["dead_zones"] = spans
+    out["pauses"] = sorted({i // per for i in range(1, total)
+                            if stamps[i] - stamps[i - 1] > PAUSE_GAP_S})
+    return out
+
+
+def radio_summary(samples: Sequence[dict]) -> dict[str, Any]:
+    """The score's headline figures, and which half of it was the problem.
+
+    "How much of the walk was strength-limited" is the actionable number here:
+    a garage that is mostly strength-limited may be fixable with antennas, and
+    one that is mostly quality-limited will not be.
+    """
+    scored = [radio.rate(s) for s in samples if radio.rate(s)["score"] is not None]
+    if not scored:
+        return {"readings": 0}
+    scores = [r["score"] for r in scored]
+    bands: dict[str, int] = {}
+    for entry in scored:
+        bands[entry["band"]] = bands.get(entry["band"], 0) + 1
+    limited: dict[str, int] = {}
+    for entry in scored:
+        if entry["limited_by"]:
+            limited[entry["limited_by"]] = limited.get(entry["limited_by"], 0) + 1
+    worst = min(scored, key=lambda r: r["score"])
+    return {
+        "readings": len(scored),
+        "median": round(_median(scores), 1),
+        "worst": round(min(scores), 1),
+        "best": round(max(scores), 1),
+        "band": radio.band(_median(scores)),
+        "bands": bands,
+        "limited_by": limited,
+        "mostly_limited_by": max(limited, key=limited.get) if limited else None,
+        "worst_limited_by": worst["limited_by"],
+    }
+
+
 def throughput_timeline(samples: Sequence[dict], zones: Sequence[dict] = (),
                         load_config: dict | None = None,
                         columns: int = TIMELINE_COLUMNS) -> dict[str, Any]:
@@ -373,6 +453,8 @@ def build_report(storage: Any, run: dict,
         "quality": quality_stats(samples),
         "under_load": load_stats(samples, load_config),
         "timeline": throughput_timeline(samples, zones, load_config),
+        "radio_timeline": radio_timeline(samples, zones),
+        "radio_score": radio_summary(samples),
     }
 
 
@@ -733,7 +815,62 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
     else:
         load_block = ""
 
-    radio = "".join([
+    # -- the combined score, and the half of it that is the problem ----------
+    score = report.get("radio_score") or {}
+    radio_plot = chart.radio_svg(report.get("radio_timeline") or {})
+    if radio_plot and score.get("readings"):
+        limiting = score.get("mostly_limited_by")
+        if limiting == radio.STRENGTH:
+            verdict = ("Mostly <strong>strength</strong>-limited: not enough of "
+                       "the cell's signal reaches here. That is the kind a "
+                       "better antenna, a different mounting position or a "
+                       "repeater can move.")
+        elif limiting == radio.QUALITY:
+            verdict = ("Mostly <strong>quality</strong>-limited: the signal "
+                       "arrives but too much of what arrives is noise and other "
+                       "transmitters. No antenna fixes this one — it is "
+                       "interference or a busy cell.")
+        else:
+            verdict = ""
+        radio_block = (
+            f'<div class="chartbox">{radio_plot}</div>'
+            '<p class="sub"><strong>Height is how much signal arrives; colour '
+            'is how much of it is usable.</strong> Height is RSRP in dBm, the '
+            'number the modem itself reports &mdash; further down the chart '
+            'means further from the cell, or more concrete in the way. Colour '
+            'and thickness are SINR: how much of what arrives is the signal '
+            'rather than noise and other transmitters.</p>'
+            '<p class="sub"><strong>A line that stays high but turns red is the '
+            'case worth finding.</strong> Plenty of signal, almost none of it '
+            'usable &mdash; "full bars, nothing works". No antenna fixes that '
+            'one; it is interference or a busy cell. A line that simply sinks '
+            'is the opposite problem, a coverage hole, and that one a better '
+            'antenna or a repeater can move.</p>'
+            '<p class="sub">RSRQ and RSSI are in the table below rather than on '
+            'the chart: they restate the relationship between those two rather '
+            'than adding a third independent fact.</p>'
+            + (f'<p class="sub">{verdict}</p>' if verdict else "")
+            + '<dl class="stats">' + "".join([
+                _stat("Median score", f"{score['median']:g} — {score['band']}"),
+                _stat("Worst", f"{score['worst']:g}"),
+                _stat("Limited by", (limiting or "—").title()),
+                _stat("At its worst",
+                      (score.get("worst_limited_by") or "—").title()),
+            ]) + "</dl>"
+            '<p class="sub">The score behind those figures is the <em>worse</em> '
+            'of the two, never the average: a link fails from either end, and '
+            'an average would let a strong signal hide a filthy one. The bands '
+            '&mdash; and the dB ranges in the key above &mdash; are the '
+            'conventional ones for LTE. They have not been checked against what '
+            'this robot actually needs, so read the shape of the line and where '
+            'it changes colour rather than the number on its own.</p>')
+    else:
+        radio_block = ""
+
+    # Named for what it is, not "radio": the module of that name is used just
+    # above, and a local of the same name makes it unbound for the whole
+    # function.
+    radio_rows = "".join([
         _radio_row("RSRP (signal strength)", signal.get("rsrp"), " dBm"),
         _radio_row("SINR (signal quality)", signal.get("sinr"), " dB"),
         _radio_row("RSRQ (signal quality)", signal.get("rsrq"), " dB"),
@@ -741,7 +878,7 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
     ])
 
     if signal.get("readings"):
-        radio_summary = "".join([
+        radio_stats = "".join([
             _stat("Band" if len(signal.get("bands") or []) == 1 else "Bands",
                   ", ".join("B" + b for b in signal.get("bands") or []) or "—"),
             _stat("Cells seen", str(signal.get("distinct_cells", 0))),
@@ -754,7 +891,7 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
             'different cell either side, are a handover rather than a coverage '
             'hole — and no amount of antenna work will fix those.</p>')
     else:
-        radio_summary = ""
+        radio_stats = ""
         radio_note = ('<p class="sub">No modem readings were collected on this '
                       'run. Set <code>router.client</code> on the rig to record '
                       'them.</p>')
@@ -820,10 +957,11 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
   {load_block}
 
   <h2>Radio</h2>
-  <dl class="stats">{radio_summary}</dl>
+  {radio_block}
+  <dl class="stats">{radio_stats}</dl>
   <table><thead><tr><th>Measurement</th><th class="num">Weakest</th>
   <th class="num">Median</th><th class="num">Strongest</th>
-  </tr></thead><tbody>{radio}</tbody></table>
+  </tr></thead><tbody>{radio_rows}</tbody></table>
   <p class="sub">Higher is better for all four: &minus;100 dBm is a stronger
   signal than &minus;104.</p>
   {radio_note}

@@ -22,11 +22,23 @@ from __future__ import annotations
 import html
 from typing import Any, Sequence
 
+from . import radio
+
+#: Two slots, used by every chart here, first solid and second dashed.
 #: Distinguishable without colour as well as with it, because these get
 #: printed, photocopied and looked at by people who do not see red and green
-#: apart. Uplink is solid, downlink dashed.
-UPLINK_COLOR = "#1b4d8f"
-DOWNLINK_COLOR = "#b26a00"
+#: apart — and checked rather than eyeballed: this pair passes the lightness
+#: band, the chroma floor, colourblind separation (worst adjacent dE 22.5,
+#: protan) and contrast against the plot surface. A blue/purple pair that
+#: looked fine to me failed deutan separation at dE 3.5.
+SERIES_A = "#2f6fb5"
+SERIES_B = "#b26a00"
+
+UPLINK_COLOR = SERIES_A
+DOWNLINK_COLOR = SERIES_B
+
+#: Where the radio score's words change. Drawn as guides, labelled on the axis.
+RADIO_BANDS = ((75, "excellent"), (50, "good"), (25, "fair"))
 
 _MARGIN_LEFT = 54
 _MARGIN_RIGHT = 16
@@ -256,4 +268,143 @@ def throughput_svg(timeline: dict, *, width: int = 900, height: int = 260) -> st
           'stroke="#646b7a" stroke-width="1"/>'
         + f'<text x="{_MARGIN_LEFT}" y="{_MARGIN_TOP - 5}" text-anchor="start" '
           'font-size="10" fill="#646b7a">Mbit/s delivered</text>'
+        + "".join(legend) + "</svg>")
+
+
+def _bands_and_pauses(timeline: dict, x_edge, top: float, height: float) -> str:
+    """Dead zones and pauses, drawn the same way on every chart here.
+
+    Both plots share an x axis of walked seconds, so a reader can lay one over
+    the other and ask whether a dead zone lines up with the radio collapsing.
+    Drawing these differently on the two would quietly break that.
+    """
+    out = []
+    for start, end in timeline.get("dead_zones") or []:
+        left = x_edge(start)
+        right = max(x_edge(end + 1), left + 1.5)
+        out.append(f'<rect x="{left:.1f}" y="{top}" width="{right - left:.1f}" '
+                   f'height="{height}" fill="#b3261e" fill-opacity="0.10"/>')
+    for column in timeline.get("pauses") or []:
+        out.append(f'<line x1="{x_edge(column):.1f}" y1="{top}" '
+                   f'x2="{x_edge(column):.1f}" y2="{top + height}" '
+                   'stroke="#646b7a" stroke-width="1" stroke-dasharray="2 3"/>')
+    return "".join(out)
+
+
+def radio_svg(timeline: dict, *, width: int = 900, height: int = 300) -> str:
+    """One line: height is signal strength, colour is signal quality.
+
+    Two facts on one plot without a second axis. Height is RSRP in the dBm the
+    modem actually reports — a number that can be checked against the router
+    rather than taken on trust — and the colour of the line is how clean that
+    signal was at that moment.
+
+    That combination is the point. A line that sits high and turns red is the
+    case no single number catches: plenty of signal arriving, almost none of it
+    usable. "Full bars, nothing works."
+
+    The colour is four named steps rather than a smooth gradient, and the line
+    also thickens as quality falls. A continuous green-to-red ramp carries its
+    whole meaning in hue, and red against green is the commonest colour-vision
+    failure — so the steps get a legend with their dB ranges printed on it, and
+    the thickness says the same thing again for anyone reading this in
+    greyscale or photocopy.
+    """
+    columns = int(timeline.get("columns") or 0)
+    strength = (timeline.get("rsrp") or {}).get("mid") or []
+    if columns <= 0 or not any(v is not None for v in strength):
+        return ""
+    quality = (timeline.get("sinr") or {}).get("mid") or []
+
+    plot_w = width - _MARGIN_LEFT - _MARGIN_RIGHT
+    plot_h = height - _MARGIN_TOP - _MARGIN_BOTTOM - 22
+    per_column = float(timeline.get("seconds_per_column") or 1.0)
+    walked_s = float(timeline.get("walked_s") or columns * per_column)
+
+    # A fixed window, not one fitted to the data: -115 to -65 dBm covers usable
+    # LTE, and a fixed axis means two garages can be held up against each other.
+    top_dbm, bottom_dbm = -65.0, -115.0
+
+    def x_of(column: float) -> float:
+        return _MARGIN_LEFT + (column + 0.5) * plot_w / columns
+
+    def x_edge(column: float) -> float:
+        return _MARGIN_LEFT + column * plot_w / columns
+
+    def y_of(dbm: float) -> float:
+        span = top_dbm - bottom_dbm
+        fraction = (max(bottom_dbm, min(top_dbm, dbm)) - bottom_dbm) / span
+        return _MARGIN_TOP + plot_h * (1.0 - fraction)
+
+    grid = []
+    for dbm, note in ((-70.0, "strong"), (-80.0, ""), (-90.0, ""),
+                      (-100.0, "weak"), (-110.0, "")):
+        y = y_of(dbm)
+        grid.append(f'<line x1="{_MARGIN_LEFT}" y1="{y:.1f}" '
+                    f'x2="{width - _MARGIN_RIGHT}" y2="{y:.1f}" '
+                    'stroke="#e3e6ec" stroke-width="1"/>')
+        grid.append(f'<text x="{_MARGIN_LEFT - 8}" y="{y + 4:.1f}" '
+                    'text-anchor="end" font-size="11" fill="#646b7a">'
+                    f'{dbm:g}</text>')
+        if note:
+            grid.append(f'<text x="{_MARGIN_LEFT + 6}" y="{y - 5:.1f}" '
+                        'font-size="10" fill="#646b7a" fill-opacity="0.85">'
+                        f'{note}</text>')
+
+    step = _time_step(walked_s)
+    at = 0.0
+    while at <= walked_s + 1e-9:
+        grid.append(f'<text x="{x_edge(at / per_column):.1f}" '
+                    f'y="{_MARGIN_TOP + plot_h + 18:.1f}" text-anchor="middle" '
+                    f'font-size="11" fill="#646b7a">{_clock(at)}</text>')
+        at += step
+
+    # One short segment per pair of columns, each carrying its own colour and
+    # width. Drawn per segment rather than as a gradient so every segment's
+    # colour is exactly the band it belongs to, with no interpolation inventing
+    # a value between two readings.
+    segments = []
+    for index in range(columns - 1):
+        here, nxt = strength[index], strength[index + 1]
+        if here is None or nxt is None:
+            continue                      # never bridge a gap in the readings
+        sinr = quality[index] if index < len(quality) else None
+        color, stroke = radio.QUALITY_STYLE[radio.quality_band(sinr)]
+        segments.append(
+            f'<line x1="{x_of(index):.1f}" y1="{y_of(here):.1f}" '
+            f'x2="{x_of(index + 1):.1f}" y2="{y_of(nxt):.1f}" '
+            f'stroke="{color}" stroke-width="{stroke}" stroke-linecap="round"/>')
+
+    legend = []
+    for index, (band, description) in enumerate(radio.QUALITY_LEGEND):
+        color, stroke = radio.QUALITY_STYLE[band]
+        y = height - 30 + index * 14
+        legend.append(
+            f'<line x1="{_MARGIN_LEFT}" y1="{y}" x2="{_MARGIN_LEFT + 22}" '
+            f'y2="{y}" stroke="{color}" stroke-width="{stroke}" '
+            'stroke-linecap="round"/>'
+            f'<text x="{_MARGIN_LEFT + 28}" y="{y + 4}" font-size="11" '
+            f'fill="#16181d">{_e(band.title())} &#183; {_e(description)}</text>')
+
+    return (
+        f'<svg class="chart" viewBox="0 0 {width} {height + 8}" '
+        'role="img" width="100%" height="auto" '
+        'xmlns="http://www.w3.org/2000/svg" '
+        f'aria-label="Signal strength over {_clock(walked_s)} of walking, '
+        'coloured by signal quality">'
+        "<title>Signal strength over the walk, coloured by quality</title>"
+        "<desc>Height is RSRP in dBm — how much of the cell's signal arrives. "
+        "Colour and thickness are SINR — how much of what arrives is signal "
+        "rather than noise. A line that stays high but turns red is plenty of "
+        "signal that cannot be used. Red columns are dead zones.</desc>"
+        f'<rect x="{_MARGIN_LEFT}" y="{_MARGIN_TOP}" width="{plot_w}" '
+        f'height="{plot_h}" fill="#ffffff"/>'
+        + _bands_and_pauses(timeline, x_edge, _MARGIN_TOP, plot_h)
+        + "".join(grid) + "".join(segments)
+        + f'<line x1="{_MARGIN_LEFT}" y1="{_MARGIN_TOP + plot_h}" '
+          f'x2="{width - _MARGIN_RIGHT}" y2="{_MARGIN_TOP + plot_h}" '
+          'stroke="#646b7a" stroke-width="1"/>'
+        + f'<text x="{_MARGIN_LEFT}" y="{_MARGIN_TOP - 5}" text-anchor="start" '
+          'font-size="10" fill="#646b7a">Signal strength (dBm) &#183; colour and '
+          'thickness are signal quality</text>'
         + "".join(legend) + "</svg>")
