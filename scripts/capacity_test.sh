@@ -204,8 +204,12 @@ if [[ -n "$UDP_RATE" ]]; then
   step "constant $UDP_RATE both ways, the way a teleop stream behaves"
   # 1200-byte datagrams, matching udp_load: iperf3's 32 KB default fragments
   # into two dozen packets and reads several times worse than real video does.
+  # --get-server-output is not optional for uplink. Only the far end knows
+  # what arrived, and when the uplink is flooded the end-of-test exchange
+  # cannot get back through — iperf3 then reports what it *sent*, with no
+  # losses recorded, exactly when the number matters most.
   run_test "uplink   at $UDP_RATE" "$UP_PORT" "$WORK/uup.json" \
-           -u -b "$UDP_RATE" -l 1200 || true
+           -u -b "$UDP_RATE" -l 1200 --get-server-output || true
   run_test "downlink at $UDP_RATE" "$DOWN_PORT" "$WORK/udown.json" \
            -u -b "$UDP_RATE" -l 1200 -R || true
 fi

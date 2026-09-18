@@ -85,6 +85,54 @@ def _utc(ts: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
 
+def measurable(samples: Sequence[dict], config: dict | None = None) -> list[dict]:
+    """The samples that describe the garage rather than the rig's own load.
+
+    The uplink load test is deliberately offered above what a robot sends, and
+    the modem holds a deep buffer. When the offered rate is more than the link
+    can carry, that buffer fills within about a second and ping — which shares
+    it — starts reporting latency nobody in the garage would ever have caused.
+    Counting those seconds as dead zones would mean the survey inventing its
+    own findings.
+
+    So the load runs in short bursts with silence between them, the seconds
+    inside a burst (and the few after it, while the queue drains) are marked,
+    and detection runs on what is left. They are dropped rather than passed
+    through as "fine" for the same reason a pause leaves no samples at all: the
+    headline is a percentage of time, and a second nobody can judge belongs in
+    neither half of it.
+
+    Filtering leaves a hole in the timeline, and a hole normally means the walk
+    was paused: the detector never stitches a dead zone across one, because the
+    operator was standing still. A burst is not that — the walk carried on — so
+    each surviving sample records how many loaded seconds ran immediately
+    before it, and :func:`_gap` subtracts them. Without that a single bad ramp
+    would come back as three dead zones with three nearly identical clips,
+    which is the thing ``merge_gap_s`` exists to prevent.
+    """
+    if config is not None and not config.get("ignore_loaded_seconds", True):
+        return list(samples)
+    kept: list[dict] = []
+    dropped = 0
+    for sample in samples:
+        if sample.get("uplink_loaded"):
+            dropped += 1
+            continue
+        kept.append({**sample, "loaded_before_s": float(dropped)} if dropped else sample)
+        dropped = 0
+    return kept
+
+
+def _gap(previous: dict, sample: dict) -> float:
+    """Seconds between two samples that the walk could have been judged on.
+
+    Time the rig spent loading the uplink itself is not a break in the walk,
+    only a break in what can be believed about it, so it does not count.
+    """
+    return (sample["ts"] - previous["ts"]
+            - float(sample.get("loaded_before_s") or 0.0))
+
+
 def is_unusable(sample: dict, config: dict) -> bool:
     """Whether one sample is bad enough to count toward a dead zone.
 
@@ -110,13 +158,12 @@ def find_dead_zones(samples: Sequence[dict], config: dict) -> list[DeadZone]:
 
     runs: list[list[dict]] = []
     current: list[dict] = []
-    previous_ts: float | None = None
+    previous: dict | None = None
 
     for sample in samples:
-        ts = sample["ts"]
         # A jump in timestamps means the walk was paused or the service
         # restarted. Do not stitch across it — the operator was not walking.
-        broken = previous_ts is not None and (ts - previous_ts) > CONTINUITY_GAP_S
+        broken = previous is not None and _gap(previous, sample) > CONTINUITY_GAP_S
         if is_unusable(sample, config) and not broken:
             current.append(sample)
         elif is_unusable(sample, config):
@@ -126,7 +173,7 @@ def find_dead_zones(samples: Sequence[dict], config: dict) -> list[DeadZone]:
         elif current:
             runs.append(current)
             current = []
-        previous_ts = ts
+        previous = sample
     if current:
         runs.append(current)
 
@@ -163,20 +210,27 @@ def _merge_adjacent(runs: list[list[dict]], merge_gap: float) -> list[list[dict]
         return []
     merged = [runs[0]]
     for group in runs[1:]:
-        gap = group[0]["ts"] - merged[-1][-1]["ts"]
-        if gap <= merge_gap:
+        if _gap(merged[-1][-1], group[0]) <= merge_gap:
             merged[-1] = merged[-1] + group
         else:
             merged.append(group)
     return merged
 
 
-def summarise(samples: Sequence[dict], zones: Sequence[DeadZone]) -> dict[str, Any]:
+def summarise(samples: Sequence[dict], zones: Sequence[DeadZone],
+              loaded_s: float = 0.0) -> dict[str, Any]:
     """Headline numbers for a finished run.
 
     The percentage is of *time walked*, not distance — there is no positioning
     indoors. Pausing while stationary is what keeps it meaningful, which is why
     paused time produces no samples at all.
+
+    ``samples`` is what :func:`measurable` left: the seconds the rig's own
+    uplink load was not sitting in the modem's buffer. ``loaded_s`` is how many
+    it took out, so the report can still say how long the walk really was and
+    how much of it was judged. The percentage is of the judged part — an
+    estimate from more than half the walk, spread evenly across it, which
+    is a fair sample of a walk at a steady pace.
     """
     total = len(samples)
     dead_samples = sum(zone.sample_count for zone in zones)
@@ -184,7 +238,9 @@ def summarise(samples: Sequence[dict], zones: Sequence[DeadZone]) -> dict[str, A
     losses = [s["loss_pct"] for s in samples if s.get("loss_pct") is not None]
 
     return {
-        "walked_s": round(total * SAMPLE_S, 1),
+        "walked_s": round((total + loaded_s) * SAMPLE_S, 1),
+        "judged_s": round(total * SAMPLE_S, 1),
+        "load_excluded_s": round(loaded_s * SAMPLE_S, 1),
         "sample_count": total,
         "dead_zone_count": len(zones),
         "dead_s": round(dead_samples * SAMPLE_S, 1),

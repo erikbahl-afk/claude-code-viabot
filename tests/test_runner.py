@@ -1,6 +1,7 @@
 import time
 
 from viabot_survey.runner import classify, slugify
+from viabot_survey.workers import udpload
 
 
 THRESHOLDS = {"degraded_loss_pct": 5, "degraded_rtt_ms": 200,
@@ -213,3 +214,56 @@ def test_deleting_a_run_frees_the_card_not_just_the_database(runner, storage, tm
     assert len(result["removed"]) == 3
     # And nothing is left pointing at a run that no longer exists.
     assert not [e for e in storage.recent_events(50) if e["run_id"] == run_id]
+
+
+def test_a_second_under_our_own_uplink_load_is_recorded_as_such(runner, storage, monkeypatch):
+    """The whole exclusion rests on this flag reaching the database. Without it
+    the report has no way to tell a garage's dead zone from the queue the rig
+    built in its own modem."""
+    runner.ping.enabled = True
+    monkeypatch.setattr(runner.ping, "snapshot",
+                        lambda now=None: {"rtt_ms": 1400.0, "loss_pct": 90.0,
+                                          "jitter_ms": 200.0})
+    runner.udp_up.enabled = True
+    monkeypatch.setattr(runner.udp_up, "start", lambda: None)
+    monkeypatch.setattr(type(runner.udp_up), "load_state",
+                        property(lambda self: udpload.LOAD_SENDING))
+
+    run = runner.start_run(label="loaded")
+    runner.collect_sample()
+    rows = list(storage.iter_samples(run["id"]))
+    runner.stop_run()
+
+    assert rows[0]["uplink_loaded"] == udpload.LOAD_SENDING
+
+
+def test_a_loaded_second_never_becomes_a_dead_zone_end_to_end(runner, storage, monkeypatch):
+    """From the sample loop through to the stored summary: a walk that is
+    unusable only while the rig was loading the uplink must not come back as a
+    garage full of dead zones. This is the failure that produced 42.3%
+    runnable at a spot with good signal."""
+    runner.ping.enabled = True
+    state = {"loaded": True}
+    monkeypatch.setattr(runner.ping, "snapshot",
+                        lambda now=None: {"rtt_ms": 2400.0 if state["loaded"] else 45.0,
+                                          "loss_pct": 95.0 if state["loaded"] else 0.0,
+                                          "jitter_ms": 5.0})
+    runner.udp_up.enabled = True
+    monkeypatch.setattr(runner.udp_up, "start", lambda: None)
+    monkeypatch.setattr(
+        type(runner.udp_up), "load_state",
+        property(lambda self: udpload.LOAD_SENDING if state["loaded"]
+                 else udpload.LOAD_IDLE))
+
+    run = runner.start_run(label="duty cycle")
+    for i in range(20):
+        state["loaded"] = i < 10
+        runner.collect_sample()
+    summary = runner.analyse_run(run["id"])["summary"]
+    runner.stop_run()
+
+    assert summary["dead_zone_count"] == 0
+    assert summary["load_excluded_s"] == 10.0
+    assert summary["judged_s"] == 10.0
+    assert summary["walked_s"] == 20.0
+    assert summary["runnable_pct"] == 100.0

@@ -74,6 +74,11 @@ CREATE TABLE IF NOT EXISTS samples (
     video_offset_s  REAL,
     clock_synced    INTEGER,
     undervoltage    INTEGER,
+    -- 1 if the rig's own uplink load test was on the wire for this second, or
+    -- still draining out of the modem's buffer. Ping shares that buffer, so a
+    -- marked second says more about the test than about the garage and is left
+    -- out of dead-zone detection.
+    uplink_loaded   INTEGER,
     PRIMARY KEY (run_id, ts)
 );
 CREATE INDEX IF NOT EXISTS idx_samples_run_ts ON samples(run_id, ts);
@@ -154,6 +159,7 @@ SAMPLE_COLUMNS = (
     "udp_up_jitter_ms", "udp_up_loss_pct", "udp_up_mbps",
     "udp_down_jitter_ms", "udp_down_loss_pct", "udp_down_mbps",
     "video_file", "video_offset_s", "clock_synced", "undervoltage",
+    "uplink_loaded",
 )
 
 #: Columns added to existing databases after the fact. CREATE TABLE IF NOT
@@ -168,6 +174,7 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("samples", "udp_down_jitter_ms", "REAL"),
     ("samples", "udp_down_loss_pct", "REAL"),
     ("samples", "udp_down_mbps", "REAL"),
+    ("samples", "uplink_loaded", "INTEGER"),
 )
 
 

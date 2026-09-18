@@ -145,6 +145,13 @@ class SurveyRunner:
             port=load["uplink_port"],
             bitrate=load["uplink_bitrate"],
             block_s=load["uplink_block_s"],
+            # Short bursts with silence between them. The load is offered
+            # above what a robot sends, and the modem buffers deeply, so a
+            # continuous stream at a rate the link cannot carry would keep
+            # that buffer full and make ping report a dead zone the garage
+            # did not cause.
+            idle_s=load["uplink_idle_s"],
+            settle_s=load["uplink_settle_s"],
             # Uplink loss can only be seen at the far end, so it arrives after
             # the samples it describes were written.
             on_backfill=self._backfill_uplink,
@@ -382,8 +389,13 @@ class SurveyRunner:
         """
         config = self.config["deadzone"]
         samples = list(self.storage.iter_samples(run_id))
-        zones = deadzones.find_dead_zones(samples, config)
-        summary = deadzones.summarise(samples, zones)
+        # Dead zones are judged only on the seconds the rig was not loading
+        # the uplink itself; the charts still plot everything, because what
+        # the link did under load is the other half of the answer.
+        judged = deadzones.measurable(samples, config)
+        zones = deadzones.find_dead_zones(judged, config)
+        summary = deadzones.summarise(judged, zones,
+                                      loaded_s=len(samples) - len(judged))
 
         if video_dir is None:
             video_dir = self.config.video_dir / run_id
@@ -624,7 +636,12 @@ class SurveyRunner:
         else:
             self._dead_streak_s = 0.0
 
-        self._track_dead_zone({"loss_pct": loss, "rtt_ms": rtt})
+        # Ping shares the modem's buffer with the uplink load test, so a
+        # second spent inside a burst is measuring the rig, not the place.
+        uplink_loaded = self.udp_up.load_state if self.udp_up.enabled else 0
+
+        self._track_dead_zone({"loss_pct": loss, "rtt_ms": rtt,
+                               "uplink_loaded": uplink_loaded})
 
         status = classify(loss, rtt, self.config["thresholds"], self._dead_streak_s)
         dns = self.dns.snapshot() if self.dns.enabled else {}
@@ -644,6 +661,7 @@ class SurveyRunner:
             "dns_ms": dns.get("resolve_ms"),
             "dead_streak_s": round(self._dead_streak_s, 1),
             "undervoltage": undervoltage,
+            "uplink_loaded": uplink_loaded,
             **signal,
             **under_load,
         }
@@ -661,7 +679,7 @@ class SurveyRunner:
                 status=status, dns_ms=dns.get("resolve_ms"),
                 video_file=video_file, video_offset_s=offset,
                 clock_synced=1 if sysinfo.clock_synced() else 0,
-                undervoltage=undervoltage,
+                undervoltage=undervoltage, uplink_loaded=uplink_loaded,
                 **signal, **under_load)
         return sample
 
@@ -685,6 +703,10 @@ class SurveyRunner:
     def _track_dead_zone(self, sample: dict) -> None:
         """Count dead zones as they happen, using the same rule as the report."""
         config = self.config["deadzone"]
+        # Same exclusion the report applies, so the live count on the phone
+        # and the one in the report cannot disagree.
+        if not deadzones.measurable([sample], config):
+            return
         unusable = deadzones.is_unusable(sample, config)
         if unusable and not self._in_dead_zone:
             if self._dead_streak_s >= float(config.get("min_duration_s", 5)):

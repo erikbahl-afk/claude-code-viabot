@@ -474,3 +474,49 @@ def test_the_padding_can_be_pinned_when_negotiation_is_not_wanted():
     modern = UdpLoadWorker(server="s", username="u", public_key_path="/k",
                            auth_padding="oaep")
     assert udpload.PKCS1_FLAG not in modern.build_command()
+
+
+# ---- the duty cycle --------------------------------------------------------
+
+def test_the_uplink_claims_the_link_for_the_burst_plus_the_settling_seconds():
+    """The modem holds roughly 1.75 Mbit of buffer, measured from a real walk's
+    own median round trip, so ping keeps queueing behind the test for a second
+    or two after the last datagram is handed over. A sample taken then is still
+    describing the test."""
+    worker = UdpLoadWorker(server="example.invalid", direction=UPLINK,
+                           block_s=10, idle_s=20, settle_s=3)
+    assert worker.loading is False
+    worker._load_until = time.time() + 2
+    assert worker.loading is True
+    worker._load_until = time.time() - 0.01
+    assert worker.loading is False
+
+
+def test_downlink_never_claims_the_uplink():
+    """-R has the *server* send, so the rig's uplink stays empty. Marking those
+    seconds would throw away two thirds of a walk for nothing."""
+    worker = UdpLoadWorker(server="example.invalid", direction=DOWNLINK)
+    worker._load_until = time.time() + 30
+    assert worker.loading is False
+
+
+def test_the_offered_rate_is_carried_for_the_report():
+    """The report needs it to tell a spot that could not carry the load apart
+    from one that carried it cleanly, and the config string is the only place
+    the rate is written down."""
+    worker = UdpLoadWorker(server="example.invalid", direction=UPLINK, bitrate="750k")
+    assert worker.offered_mbps == pytest.approx(0.75)
+    assert worker.snapshot()["offered_mbps"] == pytest.approx(0.75)
+
+
+def test_the_block_length_is_still_floored():
+    """A burst too short to establish reports nothing at all."""
+    worker = UdpLoadWorker(server="example.invalid", direction=UPLINK, block_s=1)
+    assert worker.block_s == 5.0
+
+
+def test_a_negative_gap_is_not_a_gap():
+    worker = UdpLoadWorker(server="example.invalid", direction=UPLINK,
+                           idle_s=-5, settle_s=-1)
+    assert worker.idle_s == 0.0
+    assert worker.settle_s == 0.0
