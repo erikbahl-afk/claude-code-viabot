@@ -87,6 +87,26 @@ task manager does not show it either. Read it from the **candidate-pair**
 `[bytesReceived_in_bits/s]` / `[bytesSent_in_bits/s]` series in a
 webrtc-internals dump.
 
+**A flooded uplink makes iperf3 report what it sent, not what arrived.** The
+end-of-test exchange cannot get back through a saturated uplink, so the client
+falls back to its own counts: `end.sum` then reads as *exactly* the offered rate
+at *exactly* 0.0% loss. `capacity_test.sh` printed 12 Mbit/s "delivered" over a
+link the same run had just measured at 1.64 Mbit/s, and contradicted itself two
+lines apart. Always parse the server's own per-second log
+(`--get-server-output` + `parse_server_output`), the way `udpload` does; use
+`end.sum` only when there is no server output, and say on the page that it is
+the sender's number.
+
+**The modem holds the buffer, not the router.** Measured 2026-09-18: offered 12
+Mbit/s up, and the router's `4G-LTE` transmit counter showed 12,530 kbit/s
+sustained — it handed every byte straight to the modem rather than queueing.
+So the router's qdisc never backs up and there is nothing there to shrink or
+manage; the bloat is inside the modem firmware, out of reach. The only lever on
+uplink congestion is **sending less**. The router's counters are still worth
+reading: `sed 's/:/ /' /proc/net/dev | awk '/4G-LTE/{print $10}'` sampled a
+second apart is a real local uplink throughput measurement, needing nothing in
+Dallas.
+
 **Uplink is the half that matters most, and it cannot be measured at the rig.**
 The robot *sends* video, so the heavy stream leaves the garage — and cellular
 uplink is the weaker direction, so measuring only downlink flatters every
@@ -298,7 +318,7 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 283 tests, no camera or rig needed
+.venv/bin/python -m pytest        # 285 tests, no camera or rig needed
 ```
 
 Most of the suite runs anywhere: workers are tested through their parsing and

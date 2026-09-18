@@ -21,6 +21,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .workers.udpload import parse_server_output
+
 _SCALE = {"": 1e-6, "K": 1e-3, "M": 1.0, "G": 1e3}
 
 
@@ -70,21 +72,42 @@ def tcp_result(doc: dict | None) -> dict[str, Any]:
 
 
 def udp_result(doc: dict | None) -> dict[str, Any]:
-    """What a constant-rate UDP test delivered.
+    """What a constant-rate UDP test delivered, according to the end that knows.
 
-    ``end.sum`` is the *receiving* end's view either way, which is the only end
-    that can see loss and jitter. When the rig is receiving it measured them
-    itself; when the rig is sending, iperf3 fills these in from what the server
-    reported back, because a sender cannot measure its own jitter.
+    For an uplink test that end is the server, and its numbers only come back
+    if the end-of-test exchange survives — which, on a flooded uplink, it does
+    not. iperf3 then reports what the client *sent*, with no losses recorded.
+    Every uplink figure this produced read as exactly the offered rate with
+    exactly 0.0% loss, including 12 Mbit/s "delivered" over a link the same run
+    had just measured at 1.64 Mbit/s.
 
-    (Checked against iperf3 3.16: with -J the server's own output comes back as
-    ``server_output_text``, not as JSON, so there is nothing else to read.)
+    So the server's own per-second log is parsed instead, the same way the
+    survey's load worker does it, and ``end.sum`` is used only when there is no
+    server output at all — flagged, because it cannot be trusted on uplink.
     """
     if not doc:
         return {"error": "no result"}
     if doc.get("error"):
         return {"error": str(doc["error"])}
+
+    readings = parse_server_output(doc.get("server_output_text") or "")
+    if readings:
+        rates = [r["mbps"] for r in readings]
+        losses = [r["loss_pct"] for r in readings if r["loss_pct"] is not None]
+        jitters = [r["jitter_ms"] for r in readings if r["jitter_ms"] is not None]
+        return {
+            "mbps": sum(rates) / len(rates),
+            "loss_pct": sum(losses) / len(losses) if losses else None,
+            "jitter_ms": sum(jitters) / len(jitters) if jitters else None,
+            "seconds": len(readings),
+        }
+
     summary = (doc.get("end") or {}).get("sum") or {}
+    if summary.get("bits_per_second") is not None and not doc.get("_receiving"):
+        return {"mbps": summary["bits_per_second"] / 1e6,
+                "loss_pct": summary.get("lost_percent"),
+                "jitter_ms": summary.get("jitter_ms"),
+                "unverified": True}
     bits = summary.get("bits_per_second")
     if bits is None:
         return {"error": "the test produced no throughput figure"}
@@ -151,6 +174,10 @@ def _line(label: str, result: dict, *, udp: bool = False) -> str:
     if result.get("error"):
         return f"  {label:9s} —  {result['error']}"
     out = f"  {label:9s} {result['mbps']:6.2f} Mbit/s"
+    if result.get("unverified"):
+        # The sender's own count. On a flooded uplink it reads as exactly the
+        # rate that was offered, which is not a measurement of anything.
+        return out + "   (what was SENT — the far end never reported back)"
     if udp:
         loss, jitter = result.get("loss_pct"), result.get("jitter_ms")
         if loss is not None:

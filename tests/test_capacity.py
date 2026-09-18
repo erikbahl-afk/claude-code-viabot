@@ -176,3 +176,38 @@ def test_a_working_run_carries_no_auth_advice(tmp_path):
     out = capacity.render(tmp_path, configured_up="1.5M", configured_down="300k",
                           udp_rate=None, skew_s=0.0)
     assert "rejected the credentials" not in out
+
+
+# ---- the uplink figure that was fiction ------------------------------------
+
+SERVER_LOG = """Server output:
+[  5]   0.00-1.00   sec   160 KBytes  1.31 Mbits/sec  0.512 ms  1064/1200 (89%)
+[  5]   1.00-2.00   sec   162 KBytes  1.33 Mbits/sec  0.488 ms  1050/1190 (88%)
+"""
+
+
+def test_the_uplink_figure_comes_from_the_server_not_the_sender():
+    """Only the far end knows what arrived. Reading the client's own summary
+    produced 12 Mbit/s "delivered" at 0.0% loss over a link the same run had
+    measured at 1.64 Mbit/s — every uplink result was exactly the offered rate
+    with exactly no loss, because a flooded uplink stops the end-of-test
+    exchange getting back and iperf3 falls back to what it sent."""
+    result = capacity.udp_result({
+        "server_output_text": SERVER_LOG,
+        "end": {"sum": {"bits_per_second": 12e6, "lost_percent": 0.0}},
+    })
+    assert round(result["mbps"], 2) == 1.32        # what arrived
+    assert round(result["loss_pct"], 1) == 88.5    # not 0.0
+    assert "unverified" not in result
+
+
+def test_a_sender_only_figure_is_labelled_as_one():
+    """When the server never reported back, the number is still shown — it is
+    the only one there is — but never as though it were a measurement."""
+    result = capacity.udp_result(
+        {"end": {"sum": {"bits_per_second": 12e6, "lost_percent": 0.0}}})
+    assert result["unverified"] is True
+    rendered = capacity._line("uplink", result, udp=True)
+    assert "what was SENT" in rendered
+    # And it must not print a loss figure it did not measure.
+    assert "loss" not in rendered

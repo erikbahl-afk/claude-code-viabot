@@ -145,6 +145,17 @@ comparable; the provisional thresholds were conceived for an idle link and are
 now further from it than ever; and the right way to settle the rate is still a
 measurement of what a robot sends with every camera an operator would open.
 
+**This link's uplink swings by more than a factor of two at one spot.** At the
+same place on 2026-09-18: a survey at 22:13 the night before carried 1.3 Mbit/s
+with 57% loss at RSRP -110; a capacity test the next day passed a clean 3
+Mbit/s; and a TCP ceiling test measured 1.64 Mbit/s with 147 retransmits. So a
+fixed survey load will sit comfortably inside capacity sometimes and well
+outside it at others, and the failure is not obvious in the report — an
+overloaded uplink fills the modem's buffer, ping queues behind it, and the
+survey invents dead zones the garage did not cause. The load rate question is
+therefore not "what does teleop need" alone; it is also "what can this link
+carry right now", which changes minute to minute.
+
 **How much uplink teleop really needs is not settled.** The rig's rate is set
 from one 37-second capture of one robot: 645 kbit/s mean, 764 peak, steady
 around 650-700 with a lid on it — which reads like a configured encoder target
