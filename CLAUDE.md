@@ -68,10 +68,13 @@ teleop from memory, unsourced. `uplink_bitrate: 3M` splits them: ~4.6x the
 measured session, and about two thirds of this link's own measured uplink
 ceiling of **4.48 Mbit/s** (2026-09-17, good signal).
 
-That ceiling is the constraint. The load is *continuous* and ping runs alongside
-it, so a rate at or above the link's capacity saturates the uplink for the whole
-walk and manufactures dead zones the garage did not cause. **Testing high is the
-safe direction only up to the point where the test becomes the failure.** Raise
+That ceiling is the constraint. Ping runs alongside the load and shares the
+modem's buffer with it, so a rate at or above the link's capacity manufactures
+dead zones the garage did not cause. The uplink test therefore runs in bursts
+with silence between them, and the loaded seconds are thrown out of dead-zone
+detection — but that bounds the damage, it does not license any rate. **Testing
+high is the safe direction only up to the point where the test becomes the
+failure.** Raise
 it only from a measurement of what a robot really sends with every camera an
 operator would open; to ask "could this spot carry 5 Mbit/s" without disturbing
 a survey, use `./scripts/capacity_test.sh --udp 5M`.
@@ -142,18 +145,58 @@ measurable. For the same reason an interrupted run is analysed on the next
 startup rather than merely closed: everything up to the cut is good data, and
 discarding it means driving back to the garage.
 
-**A walk shorter than one uplink block measures no uplink at all.** Uplink loss
-is only countable at the far end, so the rig runs a fixed block
-(`uplink_block_s`, 30 s) and then asks the server what arrived — a block cut
-short by the run ending reports nothing. A 23-second test walk therefore has a
-full downlink trace and no uplink whatsoever, and the report used to drop the
-section rather than say so. It now says why. The same applies to the tail of
-every real walk: up to one block's worth of uplink is lost at the end.
+**A walk shorter than one uplink cycle measures no uplink at all.** Uplink loss
+is only countable at the far end, so the rig sends a fixed burst
+(`uplink_block_s`, 10 s) and then asks the server what arrived — a burst cut
+short by the run ending reports nothing, and the burst is followed by
+`uplink_idle_s` (20 s) of silence, so the walk has to outlast the whole cycle.
+A 23-second test walk therefore has a full downlink trace and no uplink
+whatsoever, and the report used to drop the section rather than say so. It now
+says why. The same applies to the tail of every real walk: up to one burst's
+worth of uplink is lost at the end.
+
+**The uplink load runs in bursts because a continuous one measures itself.**
+The offered rate is above what a robot sends, and the modem holds roughly
+1.75 Mbit (219 KB) of buffer — derived 2026-09-18 from a real walk's own median
+RTT of 1381 ms against a 32 ms base and a 1.3 Mbit/s drain. Offer more than the
+link can carry and that buffer fills in about a second, after which everything
+sharing it queues behind the load test: ping included. That is what produced a
+42.3% runnable reading at a spot with good signal. Fill time scales inversely
+with the overshoot — 3M into 1.3M fills in 1 s, 750k into 700k takes 35 s — so
+the fix is not a gentler rate but a burst short enough that the queue cannot
+build, and a gap long enough that it drains.
+
+Seconds inside a burst, and `uplink_settle_s` after it, are written to
+`samples.uplink_loaded` (2 sending, 1 settling) and **excluded from dead-zone
+detection entirely** — `deadzones.measurable()`. They are dropped from the
+percentage rather than counted as good, exactly as paused seconds are, and the
+report prints both `walked_s` and `judged_s`. Three things follow that are easy
+to break:
+
+- The exclusion leaves a hole in the timeline, and a hole normally means a
+  pause, which the detector refuses to stitch across. A burst is not a pause —
+  the walk carried on — so each surviving sample carries `loaded_before_s` and
+  `deadzones._gap()` subtracts it. Without that one bad ramp returns as three
+  zones with three nearly identical clips.
+- "No stream" for uplink must count only the seconds the rig was *sending*
+  (`LOAD_SENDING`), or two thirds of every walk reads as the link having failed
+  badly enough to take the test down with it. Same for the grey shading on the
+  throughput plot.
+- The live dead-zone counter on the phone applies the same exclusion, or it
+  disagrees with the report.
+
+**A link that could not carry what it was offered is a floor, not a
+measurement.** `report.saturation()` counts the seconds delivering less than
+`uplink_saturated_below` (0.85) of the offered rate and the report says so. This
+matters because bufferbloat *saturates*: once the buffer is full the latency
+stops rising, so a link that was slightly short and one that was hopelessly
+short look identical in the trace. There is no honest way to recover what the
+numbers would have been — the answer is to offer less and walk it again.
 
 **A worker that finishes its work is not a worker that failed.** `Worker._loop`
 backs off exponentially between restarts, which is right for something that
 cannot start and wrong for the uplink load test, which returns after every
-30-second block *by design*. Unreset, the gap doubled — 2, 4, 8, 16, 32, 60 —
+burst *by design*. Unreset, the gap doubled — 2, 4, 8, 16, 32, 60 —
 until two thirds of a walk carried no uplink reading, indistinguishable from
 coverage gaps. A `run_once()` lasting at least `healthy_run_s` now resets the
 delay and is not announced as a restart. Keep that distinction if you add a
@@ -279,11 +322,13 @@ cut between a chunk landing and the rig learning that it did. Do not "optimise"
 that HEAD away. `tests/test_publish.py` interrupts real transfers to a real
 server; keep it that way, because nothing else catches this class of bug.
 
-**Enabling `udp_load` moves the headline number.** Dead zones are detected
-from ping, ping runs continuously, and with the load test active ping is
-measuring a loaded link rather than an idle one. More dead zones will be found
-in the same garage. Runs from before and after are not comparable, and the
-thresholds were conceived for an idle link — see `docs/UNVERIFIED.md`.
+**Enabling `udp_load` moves the headline number.** Dead zones are detected from
+ping, which shares the uplink with the load test. Since 2026-09-18 the loaded
+seconds are excluded rather than judged, so the percentage is an estimate from
+roughly two thirds of the walk rather than all of it — still a fair sample at a
+steady pace, but not the same measurement. Runs from before and after are not
+comparable, and the thresholds were conceived for an idle link — see
+`docs/UNVERIFIED.md`.
 
 **Pause means "this time did not happen".** It stops measuring and recording
 both, so paused seconds leave no samples and no video. That is what makes the

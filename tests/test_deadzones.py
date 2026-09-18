@@ -36,6 +36,12 @@ def walk(pattern, base=BASE, step=1.0):
             samples.append({"ts": ts, "rtt_ms": None, "loss_pct": 100.0})
         elif char == "s":
             samples.append({"ts": ts, "rtt_ms": 2400.0, "loss_pct": 0.0})
+        elif char == "L":
+            # The rig's own uplink burst was on the wire. Deliberately as bad
+            # as a real dead zone, because that is exactly what it looks like:
+            # the load test and ping share the modem's buffer.
+            samples.append({"ts": ts, "rtt_ms": 2400.0, "loss_pct": 90.0,
+                            "uplink_loaded": 1})
         ts += step
     return samples
 
@@ -262,3 +268,78 @@ def test_a_clip_spanning_two_segments_is_joined(tmp_path):
     # snaps to — which is the slack the pre-roll exists to provide.
     wanted = zone.duration_s + CONFIG["pre_roll_s"] + CONFIG["post_roll_s"]
     assert abs(duration - wanted) <= 2.5, f"{duration}s vs {wanted}s"
+
+
+# ---- the rig's own load must not become a finding --------------------------
+
+def test_seconds_under_our_own_uplink_load_are_not_a_dead_zone():
+    """The load test is offered above what a robot sends, and the modem buffers
+    deeply. At a rate the link cannot carry, the buffer fills in about a second
+    and ping — sharing it — reports latency the garage never caused. Counting
+    those seconds would mean the survey inventing its own findings."""
+    samples = deadzones.measurable(walk("gggLLLLLLLLLLgggg"), CONFIG)
+    assert find_dead_zones(samples, CONFIG) == []
+
+
+def test_a_real_dead_zone_next_to_a_burst_is_still_found():
+    """Dropping the loaded seconds must not drop the garage with them."""
+    samples = deadzones.measurable(walk("gLLLLLddddddddgg"), CONFIG)
+    zones = find_dead_zones(samples, CONFIG)
+    assert len(zones) == 1
+    assert zones[0].sample_count == 8
+
+
+def test_a_burst_does_not_fragment_one_dead_zone_into_several():
+    """Filtering leaves a hole in the timeline, and a hole normally means a
+    pause — which the detector refuses to stitch across, because the operator
+    was standing still. A burst is not that: the walk carried on. Treating it
+    like a pause would turn one bad ramp into three entries with three nearly
+    identical clips, the exact thing merge_gap_s exists to prevent."""
+    samples = deadzones.measurable(walk("dddddLLLLLLLLLLLLLddddd"), CONFIG)
+    zones = find_dead_zones(samples, CONFIG)
+    assert len(zones) == 1
+    # The clip still covers the whole span, burst included — the link was not
+    # observed to recover, so cutting it in half would be an invention.
+    assert zones[0].duration_s == 23.0
+    assert zones[0].sample_count == 10      # only the seconds actually judged
+
+
+def test_a_real_recovery_between_two_zones_still_separates_them():
+    """The burst is discounted, not the good stretch after it. Otherwise every
+    zone in a walk would collapse into one."""
+    samples = deadzones.measurable(walk("dddddLLLLLLLLLLLLL" + "g" * 12 + "ddddd"),
+                                   CONFIG)
+    assert len(find_dead_zones(samples, CONFIG)) == 2
+
+
+def test_a_pause_inside_a_burst_is_still_a_pause():
+    """Pause means this time did not happen, and no amount of load accounting
+    may quietly bridge it."""
+    samples = deadzones.measurable(walk("dddddLLL_LLLddddd"), CONFIG)
+    assert len(find_dead_zones(samples, CONFIG)) == 2
+
+
+def test_excluded_seconds_leave_the_percentage_rather_than_flattering_it():
+    """A second nobody can judge belongs in neither half of the headline, the
+    same way a paused second does. Counting them as good would turn a third of
+    every walk into free marks."""
+    raw = walk("ggggg" + "L" * 10 + "ddddd")
+    judged = deadzones.measurable(raw, CONFIG)
+    summary = summarise(judged, find_dead_zones(judged, CONFIG),
+                        loaded_s=len(raw) - len(judged))
+    assert summary["walked_s"] == 20.0        # the whole walk, as walked
+    assert summary["judged_s"] == 10.0        # what it was judged on
+    assert summary["load_excluded_s"] == 10.0
+    assert summary["runnable_pct"] == 50.0    # 5 good of 10 judged
+
+
+def test_the_exclusion_can_be_switched_off_to_look_at_the_loaded_seconds():
+    samples = walk("gggLLLLLLLLLLggg")
+    assert len(deadzones.measurable(samples, {"ignore_loaded_seconds": False})) == 16
+
+
+def test_a_walk_with_no_load_test_is_unaffected():
+    """The rig runs without udp_load enabled at all, and old runs predate the
+    column entirely — SQLite fills those rows with NULL."""
+    samples = walk("ggggdddddddgggg")
+    assert deadzones.measurable(samples, CONFIG) == samples

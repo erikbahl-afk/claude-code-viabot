@@ -24,7 +24,16 @@ blocks and asks for the server's own per-second output at the end of each one.
 The readings are then backfilled onto the samples they belong to. Nothing is
 lost by the delay: the report is built when the run ends.
 
-Two deliberate choices about realism:
+**Uplink runs in short bursts with silence between them.** The load is real
+traffic on a link with a deep buffer in the modem, and an offered rate above
+what the link can carry fills that buffer in about a second — after which ping,
+sharing the same queue, reports latency the garage did not cause. A short block
+bounds how long that can last, and the idle gap gives the buffer time to drain
+so the next stretch of ping measures the place rather than the test. Samples
+taken inside a burst, and for a few seconds after one, are marked as such and
+are not used to decide where the dead zones were.
+
+Three deliberate choices about realism:
 
 **Datagrams are RTP-sized, not iperf3's default.** iperf3 sends 32 KB UDP
 datagrams unless told otherwise, which the IP layer then fragments into two
@@ -86,6 +95,12 @@ DEFAULT_DATAGRAM_BYTES = 1200
 STALE_AFTER_S = 3.0
 
 UPLINK, DOWNLINK = "upload", "download"
+
+#: What a sample's ``uplink_loaded`` column means. Both are truthy, because
+#: both are seconds ping cannot be believed about; they are told apart so the
+#: report can say "the rig was sending and nothing arrived" — a real failure —
+#: rather than counting the deliberate silence between bursts as one.
+LOAD_SENDING, LOAD_SETTLING, LOAD_IDLE = 2, 1, 0
 
 #: Sample columns each direction fills.
 FIELDS = {
@@ -268,7 +283,8 @@ class UdpLoadWorker(Worker):
     def __init__(self, server: str | None, direction: str = UPLINK,
                  port: int = 5201, bitrate: str = "2M",
                  datagram_bytes: int = DEFAULT_DATAGRAM_BYTES,
-                 block_s: float = 30.0, interface: str | None = None,
+                 block_s: float = 10.0, idle_s: float = 0.0,
+                 settle_s: float = 3.0, interface: str | None = None,
                  auth_padding: str = "auto",
                  run_data_budget_mb: float | None = 2000.0,
                  username: str = "", password: str = "", public_key_path: str = "",
@@ -281,6 +297,8 @@ class UdpLoadWorker(Worker):
         self.bitrate = str(bitrate)
         self.datagram_bytes = int(datagram_bytes)
         self.block_s = max(5.0, float(block_s))
+        self.idle_s = max(0.0, float(idle_s))
+        self.settle_s = max(0.0, float(settle_s))
         self.interface = interface
         self.run_data_budget_mb = run_data_budget_mb
         self.username = username
@@ -296,6 +314,11 @@ class UdpLoadWorker(Worker):
         self._last_line: str | None = None
         self._warned_no_address = False
         self._last_reason: str | None = None
+        # Wall clock through which this worker's own traffic still owns the
+        # uplink: until then, nothing ping says is about the garage alone.
+        self._load_until: float = 0.0
+        self._sending_until: float = 0.0
+        self._offered_mbps = parse_bitrate_mbps(self.bitrate)
         # None = not yet known. "auto" settles it on the first rejection, which
         # is the only moment the answer is observable from this end.
         self._pkcs1: bool | None = {"pkcs1": True, "oaep": False}.get(
@@ -436,6 +459,10 @@ class UdpLoadWorker(Worker):
         started = time.time()
         interval_ends: list[float] = []
         output: list[str] = []
+        # From here until the modem's buffer has drained again, whatever ping
+        # sees is partly this test's own doing rather than the garage's.
+        self._load_until = started + self.block_s + self.settle_s
+        self._sending_until = started + self.block_s
         proc = self._launch()
         try:
             for line in proc.stdout:  # type: ignore[union-attr]
@@ -451,8 +478,17 @@ class UdpLoadWorker(Worker):
             proc.wait(timeout=10)
         finally:
             self._terminate()
+            self._sending_until = time.time()
+            self._load_until = self._sending_until + self.settle_s
 
         self._absorb_server_output("".join(output), started, interval_ends)
+        # Then shut up for a while. The block is short and the gap is long so
+        # that ping spends most of the walk measuring the garage instead of the
+        # queue this test just built in the modem: at 3 Mbit/s into a link that
+        # can carry 1.3, the buffer fills in about a second and everything
+        # sharing it reads as a dead zone until it drains.
+        if self.idle_s:
+            self.wait(self.idle_s)
 
     def _absorb_server_output(self, text: str, started: float,
                               interval_ends: list[float]) -> None:
@@ -507,6 +543,42 @@ class UdpLoadWorker(Worker):
     def on_stop(self) -> None:
         self._terminate()
 
+    # -- who owns the link right now -----------------------------------------
+
+    @property
+    def loading(self) -> bool:
+        """Whether this worker's own traffic is on the uplink at this moment.
+
+        The settling seconds count too. The modem holds roughly 1.75 Mbit of
+        buffer (measured 2026-09-18 from a run's own median RTT), so ping keeps
+        seeing the queue for a second or two after the last datagram was handed
+        over, and a sample taken then is still describing the test.
+
+        Downlink never claims the link: ``-R`` has the *server* send, so the
+        rig's uplink stays empty and the direction that fills up is the one
+        with room to spare.
+        """
+        return self.load_state != LOAD_IDLE
+
+    @property
+    def load_state(self) -> int:
+        """Sending, settling, or neither — see :data:`LOAD_SENDING`."""
+        if self.direction != UPLINK:
+            return LOAD_IDLE
+        now = time.time()
+        if now >= self._load_until:
+            return LOAD_IDLE
+        return LOAD_SENDING if now < self._sending_until else LOAD_SETTLING
+
+    @property
+    def offered_mbps(self) -> float | None:
+        """The rate this worker asks the link for, in Mbit/s.
+
+        The report needs it to tell a spot that could not carry the offered
+        load apart from one that carried it cleanly.
+        """
+        return self._offered_mbps
+
     # -- budget --------------------------------------------------------------
 
     @property
@@ -545,6 +617,11 @@ class UdpLoadWorker(Worker):
             "server": self.server,
             "port": self.port,
             "bitrate": self.bitrate,
+            "offered_mbps": self._offered_mbps,
+            "block_s": self.block_s if self.direction == UPLINK else None,
+            "idle_s": self.idle_s if self.direction == UPLINK else None,
+            "loading": self.loading,
+            "load_state": self.load_state,
             "pkcs1_padding": self._pkcs1,
             "live": self.direction == DOWNLINK,
             "loss_pct": (self._latest or {}).get("loss_pct"),

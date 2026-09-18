@@ -25,7 +25,7 @@ import time
 from typing import Any, Iterable, Sequence
 
 from . import chart, radio
-from .workers.udpload import parse_bitrate_mbps
+from .workers.udpload import LOAD_SENDING, parse_bitrate_mbps
 
 #: Files are laid out beside the report when it is published, so every link in
 #: the page is relative and the whole bundle can be moved or copied intact.
@@ -132,18 +132,28 @@ def signal_stats(samples: Sequence[dict]) -> dict[str, Any]:
 
 def quality_stats(samples: Sequence[dict]) -> dict[str, Any]:
     """Latency and loss beyond the headline, plus the two rig faults that
-    quietly invalidate a walk: an unsynchronised clock and undervoltage."""
-    rtts = _numbers(samples, "rtt_ms")
-    losses = _numbers(samples, "loss_pct")
+    quietly invalidate a walk: an unsynchronised clock and undervoltage.
+
+    The latency and loss figures cover the seconds the rig was *not* loading
+    the uplink itself, so this table describes the link a robot would find.
+    What the link did with a stream on it is the section below it, which is a
+    different question and deserves its own numbers — averaging the two gives a
+    median round trip nobody ever experienced. The fault counts are over the
+    whole walk: a clock that was wrong was wrong the entire time.
+    """
+    judged = [s for s in samples if not s.get("uplink_loaded")]
+    rtts = _numbers(judged, "rtt_ms")
+    losses = _numbers(judged, "loss_pct")
     total = len(samples)
 
     return {
         "rtt_ms": _spread(rtts),
-        "jitter_ms": _spread(_numbers(samples, "jitter_ms")),
-        "dns_ms": _spread(_numbers(samples, "dns_ms")),
+        "jitter_ms": _spread(_numbers(judged, "jitter_ms")),
+        "dns_ms": _spread(_numbers(judged, "dns_ms")),
         "mean_loss_pct": round(sum(losses) / len(losses), 1) if losses else None,
         "seconds_with_any_loss": sum(1 for v in losses if v > 0),
         "replies": len(rtts),
+        "judged_count": len(judged),
         # A walk taken on an unsynchronised clock cannot be lined up with the
         # video, which is the entire point of recording it.
         "unsynced_clock_samples": sum(
@@ -154,7 +164,8 @@ def quality_stats(samples: Sequence[dict]) -> dict[str, Any]:
     }
 
 
-def _absent_reason(direction: str, walked_s: int, block_s: float) -> str:
+def _absent_reason(direction: str, walked_s: int, block_s: float,
+                   idle_s: float = 0.0) -> str:
     """Why a direction has nothing, in terms of what the operator did.
 
     Uplink loss can only be counted at the far end, so the rig runs a fixed
@@ -163,20 +174,78 @@ def _absent_reason(direction: str, walked_s: int, block_s: float) -> str:
     no uplink data whatsoever, and the old report simply left the section out.
     Silently dropping the half that decides whether a spot is workable is worse
     than saying "not measured".
+
+    The block is followed by a quiet gap, so the walk has to outlast a whole
+    cycle rather than just the block.
     """
-    if direction == "uplink" and walked_s < block_s * 1.5:
+    cycle_s = block_s + idle_s
+    if direction == "uplink" and walked_s < cycle_s * 1.5:
+        gap = (f", then stays quiet for {idle_s:g}s so the modem's buffer can "
+               "drain" if idle_s else "")
         return (
-            f"The walk lasted {walked_s}s. Uplink is measured in blocks of "
-            f"{block_s:g}s and only reports once a block finishes, so this one "
-            "was cut off before it could. Walk for a few minutes to get uplink "
-            "readings."
+            f"The walk lasted {walked_s}s. Uplink is measured in bursts of "
+            f"{block_s:g}s{gap}, and a burst only reports once it finishes, so "
+            f"this walk was cut off before one could. Walk for at least "
+            f"{cycle_s * 1.5:.0f}s to get uplink readings."
         )
     if direction == "uplink":
         return ("No readings came back from the server. The test runs in "
-                f"{block_s:g}s blocks and asks the far end what arrived; check "
+                f"{block_s:g}s bursts and asks the far end what arrived; check "
                 "the event log for what the load test said.")
     return ("The stream never produced a reading. Check the event log for what "
             "the load test said.")
+
+
+def _silent_seconds(direction: str, samples: Sequence[dict],
+                    readings: Sequence[dict]) -> int:
+    """Seconds the test was running and nothing came back.
+
+    That is the severe case — iperf3's control channel is TCP, so a link bad
+    enough takes the test down and it goes quiet rather than reporting 100%
+    loss. It is only severe when the rig was actually sending, though: uplink
+    runs in bursts, so most of a walk is deliberate silence and counting that
+    would report two thirds of every walk as a catastrophic failure.
+
+    Falls back to the whole walk when nothing marked the samples, which is
+    every run recorded before the bursts existed.
+    """
+    if direction != "uplink":
+        return len(samples) - len(readings)
+    sending = [s for s in samples if s.get("uplink_loaded") == LOAD_SENDING]
+    if not sending:
+        return len(samples) - len(readings)
+    return sum(1 for s in sending if s.get("udp_up_loss_pct") is None)
+
+
+def saturation(readings: Sequence[dict], prefix: str, offered_mbps: float | None,
+               below: float) -> dict[str, Any]:
+    """How much of a direction could not carry the rate it was offered.
+
+    This is the difference between "the garage is bad" and "we broke it
+    ourselves". A link that delivers everything it was offered and still shows
+    jitter is telling you about the place. A link delivering half of it is
+    *full* — and a full link loses packets and delays them because it is full,
+    so its loss and jitter figures are a floor, not a measurement. Without this
+    the two are indistinguishable in the report, because bufferbloat saturates:
+    once the buffer is full the latency stops rising, so a link that was
+    slightly short and one that was hopelessly short look identical.
+
+    Reported rather than corrected. There is no honest way to recover what the
+    numbers would have been; the answer is to offer less next time.
+    """
+    if not offered_mbps:
+        return {"offered_mbps": None}
+    floor = offered_mbps * float(below)
+    delivered = [s.get(prefix + "mbps") for s in readings]
+    short = sum(1 for v in delivered if v is not None and v < floor)
+    got = [v for v in delivered if v is not None]
+    return {
+        "offered_mbps": round(offered_mbps, 3),
+        "saturated_seconds": short,
+        "saturated_pct": round(100.0 * short / len(readings), 1) if readings else None,
+        "delivered_median_mbps": round(_median(got), 3) if got else None,
+        "below": float(below),
+    }
 
 
 def load_stats(samples: Sequence[dict],
@@ -196,27 +265,34 @@ def load_stats(samples: Sequence[dict],
     """
     config = load_config or {}
     block_s = float(config.get("uplink_block_s") or 30)
+    idle_s = float(config.get("uplink_idle_s") or 0)
+    below = float(config.get("uplink_saturated_below") or 0.85)
     out: dict[str, Any] = {}
-    for name, prefix in (("uplink", "udp_up_"), ("downlink", "udp_down_")):
+    for name, prefix, rate_key in (("uplink", "udp_up_", "uplink_bitrate"),
+                                   ("downlink", "udp_down_", "downlink_bitrate")):
         readings = [s for s in samples if s.get(prefix + "loss_pct") is not None]
         if not readings:
             out[name] = {
                 "seconds_measured": 0,
-                "absent_reason": _absent_reason(name, len(samples), block_s),
+                "absent_reason": _absent_reason(name, len(samples), block_s, idle_s),
             }
             continue
         losses = _numbers(readings, prefix + "loss_pct")
+        offered = parse_bitrate_mbps(config.get(rate_key))
         out[name] = {
             "seconds_measured": len(readings),
-            "seconds_without_stream": len(samples) - len(readings),
+            "seconds_without_stream": _silent_seconds(name, samples, readings),
             "jitter_ms": _spread(_numbers(readings, prefix + "jitter_ms")),
             "loss_pct": _spread(losses),
             "mbps": _spread(_numbers(readings, prefix + "mbps")),
             "mean_loss_pct": round(sum(losses) / len(losses), 1) if losses else None,
             "clean_seconds": sum(1 for v in losses if v == 0),
+            **saturation(readings, prefix, offered, below),
         }
     out["seconds_measured"] = max(out["uplink"]["seconds_measured"],
                                   out["downlink"]["seconds_measured"])
+    out["uplink_block_s"] = block_s
+    out["uplink_idle_s"] = idle_s
     return out
 
 
@@ -387,6 +463,11 @@ def throughput_timeline(samples: Sequence[dict], zones: Sequence[dict] = (),
     out["dead_zones"] = spans
     out["pauses"] = sorted({i // per for i in range(1, total)
                             if stamps[i] - stamps[i - 1] > PAUSE_GAP_S})
+    # Which columns the rig was actually sending uplink in, so silence it chose
+    # is never drawn as silence the garage caused.
+    out["uplink_sending"] = _bucket(
+        [1.0 if s.get("uplink_loaded") == LOAD_SENDING else None for s in samples],
+        per)
     out["no_stream"] = _no_stream_spans(out, list(series), out["columns"])
     return out
 
@@ -400,11 +481,18 @@ def _no_stream_spans(timeline: dict, measured: Sequence[str],
     silent until it recovers. It is worth drawing, because a stream can
     collapse without the walk crossing the dead-zone thresholds.
 
+    Silence the rig chose is not that. Uplink runs in bursts, so a column with
+    no burst in it has nothing to report and never counts — otherwise a walk
+    with downlink switched off would come back shaded grey almost end to end.
+
     Stretches touching either end are dropped. The test takes a few seconds to
     come up at the start of a walk and is stopped at the end of one, and
     neither is the garage's fault.
     """
+    sending = (timeline.get("uplink_sending") or {}).get("seconds") or []
+    tried = any(sending)
     down = [all(timeline[name]["seconds"][c] == 0 for name in measured)
+            and (not tried or bool(sending[c]))
             for c in range(columns)]
     spans: list[list[int]] = []
     for column, missing in enumerate(down):
@@ -666,12 +754,21 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
         headline = ('<div class="headline"><div class="pct mid">—</div>'
                     '<p class="caption">No samples were recorded for this run.</p></div>')
     else:
+        excluded = summary.get("load_excluded_s") or 0
+        judged = (
+            f' Measured over the {duration(summary.get("judged_s"))} of the walk '
+            "when the rig was not loading the uplink itself: the load test "
+            "shares the modem's buffer with ping, so those seconds describe the "
+            "test rather than the garage. They are spread evenly across the "
+            "walk, so this is a fair sample of it."
+            if excluded else "")
         headline = (
             f'<div class="headline"><div class="pct {_grade(pct)}">{pct:g}%</div>'
             '<p class="caption">of the time walked had a link the robot could '
             'use. This is a share of <strong>time</strong>, not of floor area — '
             'there is no positioning underground, so it holds only if the walk '
-            'was at a steady pace and paused whenever standing still.</p></div>')
+            'was at a steady pace and paused whenever standing still.'
+            f'{judged}</p></div>')
 
     warnings = []
     if config.get("provisional", False) or summary.get("thresholds_provisional"):
@@ -682,6 +779,18 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
             f"{config.get('min_duration_s', 5):g}s) are provisional. They were "
             "chosen before any real survey and have not yet been checked against "
             "a garage anyone knows. Treat the count as indicative.")
+    up = (report.get("under_load") or {}).get("uplink") or {}
+    if (up.get("saturated_pct") or 0) >= 25 and up.get("offered_mbps"):
+        warnings.append(
+            f"The uplink could not carry the rate it was offered for "
+            f"{up['saturated_pct']:g}% of the seconds it was measured "
+            f"({up['saturated_seconds']}s of {up['seconds_measured']}s; offered "
+            f"{up['offered_mbps']:g} Mbit/s, median delivered "
+            f"{up.get('delivered_median_mbps')} Mbit/s). A link that is full "
+            "loses and delays packets because it is full, so the uplink loss "
+            "and jitter below are a floor rather than a measurement of this "
+            "garage. Lower udp_load.uplink_bitrate towards what the robot "
+            "really sends and walk it again if you need the real numbers.")
     if quality.get("unsynced_clock_samples"):
         warnings.append(
             f"The clock was not synchronised for "
@@ -697,6 +806,8 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
     # -- tab one: the answer -------------------------------------------------
     stats = "".join([
         _stat("Walked", duration(report.get("walked_s"))),
+        _stat("Judged", duration(summary.get("judged_s")))
+        if summary.get("load_excluded_s") else "",
         _stat("Dead zones", str(summary.get("dead_zone_count", len(zones)))),
         _stat("Time dead", duration(summary.get("dead_s"))),
         _stat("Longest", duration(summary.get("longest_dead_zone_s"))),
@@ -790,6 +901,25 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
                     f'<p class="sub">{_e(half.get("absent_reason") or "")}</p>'
                     "</div>")
                 continue
+            # A link that could not carry what it was offered was *full*, and
+            # a full link loses packets because it is full. Saying so next to
+            # the loss figure is the difference between a finding and an
+            # artefact of the test's own making.
+            short = half.get("saturated_seconds")
+            if short and half.get("offered_mbps"):
+                saturated = (
+                    f'<p class="sub"><strong>{half["saturated_pct"]:g}% of these '
+                    f"seconds ({short}s) delivered less than "
+                    f'{half["below"]:g}&times; the '
+                    f'{half["offered_mbps"]:g}&nbsp;Mbit/s offered</strong> '
+                    f'(median delivered {half.get("delivered_median_mbps")}'
+                    "&nbsp;Mbit/s). For those the link was full, so the loss "
+                    "and jitter below are a floor, not a measurement &mdash; "
+                    "and because a full buffer stops getting worse, a link "
+                    "that was slightly short looks the same here as one that "
+                    "was hopelessly short.</p>")
+            else:
+                saturated = ""
             sections.append(
                 f"<h3>{heading}</h3><p class=\"sub\">{blurb}</p>"
                 '<dl class="stats">' + "".join([
@@ -798,20 +928,32 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
                     _stat("Mean loss", f"{half.get('mean_loss_pct')}%"
                           if half.get("mean_loss_pct") is not None else "—"),
                     _stat("No stream", f"{half.get('seconds_without_stream', 0)}s"),
-                ]) + "</dl>"
+                    _stat("Could not carry", f"{short}s") if short else "",
+                ]) + "</dl>" + saturated +
                 '<table><thead><tr><th>Measurement</th><th class="num">Best</th>'
                 '<th class="num">Median</th><th class="num">95th</th>'
                 '<th class="num">Worst</th></tr></thead><tbody>'
                 + _spread_row("Jitter", half.get("jitter_ms"), " ms")
                 + _spread_row("Packet loss", half.get("loss_pct"), "%")
                 + "</tbody></table>")
+        block_s = load.get("uplink_block_s") or 0
+        idle_s = load.get("uplink_idle_s") or 0
+        duty = (
+            f" Uplink is sent in {block_s:g}-second bursts with {idle_s:g} "
+            "seconds of silence between them, so the modem's buffer drains and "
+            "ping spends most of the walk measuring the garage rather than "
+            "queueing behind this test &mdash; so &ldquo;no stream&rdquo; for "
+            "uplink counts only bursts that reached nobody, never the quiet "
+            "between them. Downlink runs continuously; it does not compete "
+            "for the uplink."
+            if block_s and idle_s else "")
         load_block = (
             "<h2>Under a teleop-sized load</h2>"
-            '<p class="sub">Measured with constant UDP streams at the bitrates a '
+            '<p class="sub">Measured with UDP streams at the bitrates a '
             "teleoperation session uses, rather than on an idle link. Seconds "
             "with <em>no stream at all</em> are the severe case, not missing "
             "data: the link failed badly enough that the test itself could not "
-            "stay up.</p>" + chart_block + "".join(sections))
+            f"stay up.{duty}</p>" + chart_block + "".join(sections))
     else:
         load_block = ""
 
@@ -896,8 +1038,19 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
                       'run. Set <code>router.client</code> on the rig to record '
                       'them.</p>')
 
+    judged_count = quality.get("judged_count")
+    unloaded_note = (
+        '<p class="sub">These figures cover the '
+        f'{duration(judged_count)} of the walk when the rig was not loading '
+        "the uplink itself &mdash; the link a robot would find on arriving. "
+        "What the link did with a teleop stream on it is the next section; "
+        "the two are different questions, and averaging them gives a median "
+        "round trip nobody ever experienced.</p>"
+        if judged_count is not None and judged_count < quality.get("sample_count", 0)
+        else "")
     quality_stats_row = "".join([
         _stat("Samples", str(quality.get("sample_count", 0))),
+        _stat("Unloaded", str(judged_count)) if unloaded_note else "",
         _stat("Replies", str(quality.get("replies", 0))),
         _stat("Mean loss", f"{quality.get('mean_loss_pct')}%"
               if quality.get("mean_loss_pct") is not None else "—"),
@@ -949,6 +1102,7 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
   {video_block}
 
   <h2>Latency and loss</h2>
+  {unloaded_note}
   <dl class="stats">{quality_stats_row}</dl>
   <table><thead><tr><th>Measurement</th><th class="num">Best</th>
   <th class="num">Median</th><th class="num">95th</th><th class="num">Worst</th>

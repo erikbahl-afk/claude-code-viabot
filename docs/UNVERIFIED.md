@@ -123,11 +123,23 @@ The 10–15 s figure is one foil test, not a characterisation. A real garage wil
 say whether it holds.
 
 **Turning on `udp_load` will change the headline percentage.** Ping runs
-continuously and is what dead zones are detected from. With the load test
-active, ping is measuring a link that is carrying a teleop-sized stream rather
-than an idle one, so loss and latency will be worse and more dead zones will be
-found — in the same garage. That is arguably the more honest number, but it
-means **results from before and after enabling it are not comparable**, and the
+continuously and is what dead zones are detected from, and it shares the modem's
+uplink buffer with the load test. Since 2026-09-18 the uplink load runs in short
+bursts and the seconds it was on the wire are **excluded** from detection, so
+the percentage is computed from roughly two thirds of the walk instead of all of
+it. That is a fair sample at a steady pace and it is unbiased — the duty cycle is
+regular and has nothing to do with where you are — but it is an estimate, and a
+short dead spot that happens to fall entirely inside a burst will be missed.
+
+**What the exclusion does not fix.** Bufferbloat saturates: once the modem's
+buffer is full, latency stops rising, so a link that was slightly short of the
+offered rate and one that was hopelessly short look identical. The report
+counts the seconds that delivered less than 85% of what was offered and says
+they are a floor rather than a measurement, but it cannot recover the number
+that would have been there. The only real fix is to offer a rate the link can
+carry, which means **measuring what a robot actually sends**.
+
+Results from before and after enabling the load test are not comparable, and the
 thresholds were conceived for an idle link. Set thresholds after deciding
 whether the load test is on, not before.
 
@@ -135,10 +147,19 @@ whether the load test is on, not before.
 uplink figure is bounded by the rig, not by the robot.** The choice was between
 645 kbit/s (measured from one real session) and 5 Mbit/s (quoted from memory,
 unsourced). 3M splits them at ~4.6x the measurement — but the reason it is not
-5M is this link's own uplink ceiling of 4.48 Mbit/s at a *good* spot. A
-continuous load at the ceiling saturates the uplink for the whole walk, and
-ping, which is what dead zones are detected from, shares it. The survey would
-then find dead zones it created.
+5M is this link's own uplink ceiling of 4.48 Mbit/s at a *good* spot. A load at
+or near the ceiling fills the modem's buffer, and ping — which is what dead
+zones are detected from — shares it. The survey would then find dead zones it
+created.
+
+**This has already happened.** A run on 2026-09-17 at a spot with good reception
+came back 42.3% runnable, with a median round trip of 1381 ms against a 32 ms
+base. Working back from that gives a modem buffer of about 1.75 Mbit (219 KB)
+and a link carrying roughly 1.3 Mbit/s — so a continuous 3 Mbit/s offer filled
+the buffer in about a second and kept it full for the whole walk. Fill time
+scales inversely with the overshoot: 3M into 1.3M is one second, 750k into 700k
+is thirty-five. **The rate is still unvalidated, and the burst schedule bounds
+the damage rather than removing it.**
 
 Consequences to hold on to: runs before and after this change are not
 comparable; the provisional thresholds were conceived for an idle link and are

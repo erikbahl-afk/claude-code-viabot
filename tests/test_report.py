@@ -150,7 +150,7 @@ def test_the_page_says_why_uplink_is_missing():
         _short_walk(), {"uplink_block_s": 30}))
     page = report.render_html(built)
     assert "Not measured on this run" in page
-    assert "Walk for a few minutes" in page
+    assert "Walk for at least" in page
     # The half that did work is still shown in full.
     assert "Downlink" in page
 
@@ -160,8 +160,19 @@ def test_a_long_walk_with_no_uplink_blames_the_server_not_the_operator():
     sends them to do the wrong thing."""
     stats = report.load_stats(_short_walk(600), {"uplink_block_s": 30})
     reason = stats["uplink"]["absent_reason"]
-    assert "Walk for a few minutes" not in reason
+    assert "Walk for at least" not in reason
     assert "event log" in reason
+
+
+def test_the_walk_has_to_outlast_the_whole_duty_cycle_not_just_the_burst():
+    """The burst is short but the gap after it is not, and a walk that ends in
+    the gap still reports nothing. Quoting only the burst length would send
+    someone out for ten seconds and leave them with an empty section again."""
+    stats = report.load_stats(_short_walk(25),
+                              {"uplink_block_s": 10, "uplink_idle_s": 20})
+    reason = stats["uplink"]["absent_reason"]
+    assert "45s" in reason          # 1.5 whole cycles, not 1.5 bursts
+    assert "drain" in reason
 
 
 # ---- the full video, which arrives after this page was written -------------
@@ -203,3 +214,179 @@ def test_the_request_button_is_not_treated_as_a_tab():
     assert "document.querySelectorAll('.tabs [data-tab]')" in page
     # And a tab with no panel can no longer take the script down.
     assert "if (panel) panel.hidden = !on;" in page
+
+
+# ---- saturation: a full link is not a finding about the garage -------------
+
+def _loaded_walk(seconds=60, delivered=1.2):
+    """A walk where the uplink delivered less than it was offered."""
+    return [{"ts": 1_700_000_000.0 + i, "rtt_ms": 1400.0, "loss_pct": 10.0,
+             "udp_up_loss_pct": 22.0, "udp_up_jitter_ms": 40.0,
+             "udp_up_mbps": delivered} for i in range(seconds)]
+
+
+def test_a_link_that_could_not_carry_the_offered_rate_is_counted():
+    stats = report.load_stats(_loaded_walk(), {
+        "uplink_bitrate": "3M", "uplink_saturated_below": 0.85})
+    half = stats["uplink"]
+    assert half["offered_mbps"] == 3.0
+    assert half["saturated_seconds"] == 60
+    assert half["saturated_pct"] == 100.0
+    assert half["delivered_median_mbps"] == 1.2
+
+
+def test_a_link_that_carried_what_it_was_offered_is_not_flagged():
+    """Otherwise every clean walk would carry a warning and the warning would
+    stop meaning anything."""
+    stats = report.load_stats(_loaded_walk(delivered=2.95), {
+        "uplink_bitrate": "3M", "uplink_saturated_below": 0.85})
+    assert stats["uplink"]["saturated_seconds"] == 0
+
+
+def test_no_configured_rate_means_no_saturation_claim():
+    """Better to say nothing than to compare against a number we invented."""
+    stats = report.load_stats(_loaded_walk(), {})
+    assert stats["uplink"]["offered_mbps"] is None
+    assert "saturated_seconds" not in stats["uplink"]
+
+
+def test_the_page_warns_that_a_saturated_reading_is_a_floor():
+    """The whole point: a full link loses packets because it is full, so its
+    loss figure describes the test rather than the garage. Without this the
+    report presents the rig's own doing as a property of the place."""
+    built = dict(REPORT, under_load=report.load_stats(
+        _loaded_walk(), {"uplink_bitrate": "3M"}))
+    page = report.render_html(built)
+    assert "could not carry the rate it was offered" in page
+    assert "floor rather than a measurement" in page
+    assert "uplink_bitrate" in page
+
+
+def test_a_clean_walk_gets_no_saturation_warning():
+    built = dict(REPORT, under_load=report.load_stats(
+        _loaded_walk(delivered=2.95), {"uplink_bitrate": "3M"}))
+    assert "could not carry the rate it was offered" not in report.render_html(built)
+
+
+def test_the_page_says_the_uplink_is_sent_in_bursts():
+    """An operator reading 'constant UDP streams' would reasonably wonder why
+    the uplink trace has holes in it every twenty seconds."""
+    built = dict(REPORT, under_load=report.load_stats(
+        _loaded_walk(), {"uplink_bitrate": "3M", "uplink_block_s": 10,
+                         "uplink_idle_s": 20}))
+    page = report.render_html(built)
+    assert "10-second bursts" in page
+    assert "20 seconds of silence" in page
+
+
+def test_the_headline_says_what_it_was_judged_on_when_seconds_were_excluded():
+    built = dict(REPORT, summary={**REPORT.get("summary", {}),
+                                  "judged_s": 400.0, "load_excluded_s": 200.0})
+    page = report.render_html(built)
+    assert "not loading the uplink itself" in page
+
+
+def test_the_silence_between_bursts_is_not_reported_as_a_failed_stream():
+    """Uplink is sent in bursts, so most of a walk is deliberate silence.
+    Counting it as 'no stream' would report two thirds of every walk as the
+    link having failed badly enough to take the test down with it."""
+    samples = []
+    for i in range(60):
+        sending = (i % 30) < 10
+        samples.append({
+            "ts": 1_700_000_000.0 + i,
+            "uplink_loaded": 2 if sending else 0,
+            "udp_up_loss_pct": 1.0 if sending else None,
+            "udp_up_jitter_ms": 3.0 if sending else None,
+            "udp_up_mbps": 2.9 if sending else None,
+        })
+    half = report.load_stats(samples, {"uplink_bitrate": "3M"})["uplink"]
+    assert half["seconds_measured"] == 20
+    assert half["seconds_without_stream"] == 0
+
+
+def test_a_burst_that_reached_nobody_is_still_reported_as_no_stream():
+    """The severe case has to survive the fix: the rig was sending and the far
+    end heard nothing, which is worse than a low reading."""
+    samples = []
+    for i in range(60):
+        sending = (i % 30) < 10
+        got = sending and i < 30          # the second burst reached nobody
+        samples.append({
+            "ts": 1_700_000_000.0 + i,
+            "uplink_loaded": 2 if sending else 0,
+            "udp_up_loss_pct": 1.0 if got else None,
+            "udp_up_jitter_ms": 3.0 if got else None,
+            "udp_up_mbps": 2.9 if got else None,
+        })
+    half = report.load_stats(samples, {"uplink_bitrate": "3M"})["uplink"]
+    assert half["seconds_without_stream"] == 10
+
+
+def test_a_run_from_before_the_bursts_still_counts_silence_the_old_way():
+    """Nothing marked those samples, and a continuous test really was sending
+    for every second of the walk."""
+    samples = [{"ts": 1_700_000_000.0 + i,
+                "udp_up_loss_pct": 1.0 if i < 30 else None,
+                "udp_up_jitter_ms": 3.0 if i < 30 else None,
+                "udp_up_mbps": 2.9 if i < 30 else None} for i in range(60)]
+    half = report.load_stats(samples, {"uplink_bitrate": "3M"})["uplink"]
+    assert half["seconds_without_stream"] == 30
+
+
+def test_downlink_switched_off_does_not_shade_the_whole_walk_grey():
+    """Grey means the link failed badly enough to take the test down with it.
+    With only uplink measured, the gaps between bursts would otherwise paint
+    two thirds of the plot as the worst thing the report can say."""
+    samples = []
+    for i in range(120):
+        sending = (i % 30) < 10
+        samples.append({"ts": 1_700_000_000.0 + i,
+                        "uplink_loaded": 2 if sending else 0,
+                        "udp_up_mbps": 2.9 if sending else None})
+    timeline = report.throughput_timeline(samples, load_config={"uplink_bitrate": "3M"})
+    assert "downlink" not in timeline
+    assert timeline["no_stream"] == []
+
+
+def test_a_burst_that_delivered_nothing_is_still_shaded():
+    samples = []
+    for i in range(120):
+        sending = (i % 30) < 10
+        samples.append({"ts": 1_700_000_000.0 + i,
+                        "uplink_loaded": 2 if sending else 0,
+                        # the middle two bursts reached nobody
+                        "udp_up_mbps": 2.9 if sending and not 30 <= i < 90 else None})
+    timeline = report.throughput_timeline(samples, load_config={"uplink_bitrate": "3M"})
+    assert timeline["no_stream"]
+
+
+def test_latency_and_loss_describe_the_link_a_robot_would_find():
+    """The load test's own seconds have a round trip of 1.8 seconds by
+    construction. Folding them into the latency table produces a median nobody
+    ever experienced, sitting directly above a 95% headline."""
+    samples = ([{"ts": 1_700_000_000.0 + i, "rtt_ms": 1800.0, "loss_pct": 60.0,
+                 "uplink_loaded": 2} for i in range(10)]
+               + [{"ts": 1_700_000_010.0 + i, "rtt_ms": 50.0, "loss_pct": 0.0,
+                   "uplink_loaded": 0} for i in range(20)])
+    stats = report.quality_stats(samples)
+    assert stats["sample_count"] == 30      # the whole walk, as walked
+    assert stats["judged_count"] == 20
+    assert stats["rtt_ms"]["max"] == 50.0
+    assert stats["mean_loss_pct"] == 0.0
+
+
+def test_the_latency_table_says_which_seconds_it_covers():
+    samples = ([{"ts": 1_700_000_000.0 + i, "rtt_ms": 1800.0, "loss_pct": 60.0,
+                 "uplink_loaded": 2} for i in range(10)]
+               + [{"ts": 1_700_000_010.0 + i, "rtt_ms": 50.0, "loss_pct": 0.0}
+                  for i in range(20)])
+    page = report.render_html(dict(REPORT, quality=report.quality_stats(samples)))
+    assert "not loading the uplink itself" in page
+
+
+def test_a_run_with_no_load_test_gets_no_extra_caveat():
+    """Most of the caveats in this report earn their place. One that fires on
+    every run, including runs where it cannot apply, does not."""
+    page = report.render_html(dict(REPORT, quality=report.quality_stats(SAMPLES)))
+    assert "the link a robot would find on arriving" not in page
