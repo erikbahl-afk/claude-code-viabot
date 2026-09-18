@@ -169,6 +169,18 @@ working and points the blame at the credentials. `capacity_test.sh` reads the
 server's clock off an HTTPS `Date:` header before testing, and `udpload.parse_error()`
 spells out both causes.
 
+**The radio plot puts dBm on the axis and quality in the colour.** Height is
+RSRP as the modem reports it — a number that can be checked against the router
+rather than taken on trust — and the line's colour *and thickness* are SINR. A
+line that stays high and turns red is the case no single number catches: plenty
+of signal, almost none of it usable. Quality is four named steps rather than a
+smooth gradient, and **never travels as colour alone**: red against green is the
+commonest colour-vision failure, so the key prints each band's dB range and the
+line thickens as quality falls, which is what survives greyscale and
+photocopying. Verified by rendering the page with `filter: grayscale(1)`. The
+dBm window is fixed at -115..-65 rather than fitted to the data, so two garages
+can be compared against each other.
+
 **The radio score is the worse of two numbers, never the average.** RSRP says
 how much of the cell's signal arrives; SINR says how much of what arrives is
 signal rather than noise. They fail independently and need different remedies —
@@ -286,7 +298,7 @@ example file is what makes it exist — a user's older local config still boots.
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 281 tests, no camera or rig needed
+.venv/bin/python -m pytest        # 283 tests, no camera or rig needed
 ```
 
 Most of the suite runs anywhere: workers are tested through their parsing and

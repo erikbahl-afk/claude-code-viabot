@@ -126,3 +126,52 @@ def rate(sample: dict[str, Any]) -> dict[str, Any]:
 
     return {"score": score, "strength": strength, "quality": quality,
             "limited_by": limited_by, "band": band(score)}
+
+
+#: Quality expressed the way the chart shows it: four named steps, not a smooth
+#: gradient. The reason is legibility, not taste — a continuous green-to-red
+#: ramp carries its meaning in hue alone, and red against green is the single
+#: most common colour-vision failure. Four named steps get a legend with the dB
+#: ranges printed on it, so the colour is a shortcut to something also written
+#: down rather than the only way to read the chart.
+#:
+#: Lower bound of each band, in dB of SINR.
+QUALITY_BANDS: tuple[tuple[float, str], ...] = (
+    (20.0, "excellent"),
+    (13.0, "good"),
+    (0.0, "fair"),
+    (float("-inf"), "poor"),
+)
+
+#: The reserved status colours, plus a stroke width that widens as things get
+#: worse. The width is the part that still works photocopied, printed in
+#: greyscale, or read by someone who cannot tell red from green.
+QUALITY_STYLE: dict[str, tuple[str, float]] = {
+    "excellent": ("#0ca30c", 1.6),
+    "good": ("#0ca30c", 1.6),
+    "fair": ("#fab219", 2.3),
+    "poor": ("#d03b3b", 3.2),
+    "unknown": ("#646b7a", 1.4),
+}
+
+#: What each band means in the units the modem reports, for the legend. Colour
+#: never travels without this.
+QUALITY_LEGEND: tuple[tuple[str, str], ...] = (
+    ("good", "SINR 13 dB and up — clean"),
+    ("fair", "SINR 0 to 13 dB — usable, degrading"),
+    ("poor", "SINR below 0 dB — noise louder than signal"),
+)
+
+
+def quality_band(sinr: float | None) -> str:
+    """Which named step a SINR reading falls in."""
+    if sinr is None:
+        return "unknown"
+    try:
+        value = float(sinr)
+    except (TypeError, ValueError):
+        return "unknown"
+    for lower, name in QUALITY_BANDS:
+        if value >= lower:
+            return name
+    return "poor"

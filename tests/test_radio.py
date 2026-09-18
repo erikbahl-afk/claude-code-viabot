@@ -93,15 +93,38 @@ def test_a_run_with_no_modem_readings_draws_nothing():
     assert chart.radio_svg({}) == ""
 
 
-def test_the_plot_uses_one_scale_for_both_series():
-    """Two measures in different units on one plot invents a relationship that
-    is not in the data. Both series are scored 0-100 first, so there is only
-    ever one axis."""
+def test_the_plot_carries_two_facts_without_a_second_axis():
+    """Height is strength in dBm; quality rides on colour and thickness. Two
+    y-scales on one plot would invent a relationship that is not in the data."""
     svg = chart.radio_svg(report.radio_timeline(_walk(), ()))
-    assert svg.count("Radio score (0-100)") == 1
-    # Both named in the legend: identity is never carried by colour alone.
-    assert "Strength" in svg and "Quality" in svg
-    assert 'stroke-dasharray="6 3"' in svg
+    assert "Signal strength (dBm)" in svg
+    assert svg.count("dBm)") == 1                      # one axis, named once
+    # The dBm window is fixed rather than fitted, so two garages can be
+    # compared against each other rather than each against itself.
+    assert "-110" in svg and "-70" in svg
+
+
+def test_quality_never_travels_as_colour_alone():
+    """Red against green is the commonest colour-vision failure, and this
+    report goes to customers. Each band is named with its dB range in the key,
+    and the line thickens as quality falls, so the chart survives greyscale,
+    photocopying and colourblindness."""
+    svg = chart.radio_svg(report.radio_timeline(_walk(), ()))
+    for band, description in radio.QUALITY_LEGEND:
+        assert band.title() in svg
+        assert description.split("&")[0].strip()[:12] in svg
+    widths = {radio.QUALITY_STYLE[b][1] for b, _ in radio.QUALITY_LEGEND}
+    assert len(widths) == len(radio.QUALITY_LEGEND)    # thickness differs too
+
+
+def test_a_gap_in_the_readings_is_not_drawn_across():
+    rows = _walk(60)
+    for row in rows[20:30]:
+        row["rsrp"] = None
+    timeline = report.radio_timeline(rows, ())
+    svg = chart.radio_svg(timeline)
+    # Fewer segments than columns, because the hole is left as a hole.
+    assert svg.count("<line x1=") < timeline["columns"] + 12
 
 
 def test_the_report_renders_the_score_block():
@@ -119,7 +142,8 @@ def test_the_report_renders_the_score_block():
         "radio_score": report.radio_summary(rows),
     }
     page = report.render_html(built)
-    assert "the worse of two things" in page
+    assert "turns red is the" in page
+    assert "<em>worse</em> of the two" in page
     assert "Median score" in page
     # And it says the bands are conventions rather than requirements.
     assert "conventional ones for LTE" in page

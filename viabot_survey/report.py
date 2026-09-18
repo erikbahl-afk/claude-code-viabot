@@ -280,6 +280,11 @@ def radio_timeline(samples: Sequence[dict], zones: Sequence[dict] = (),
             out[name] = _bucket(values, per)
 
     out["score"] = _bucket([r["score"] for r in scored], per)
+    # The raw readings as well as the scores: the plot puts dBm on the axis,
+    # because a number an engineer can check against a modem beats a derived
+    # one they have to take on trust.
+    out["rsrp"] = _bucket([s.get("rsrp") for s in samples], per)
+    out["sinr"] = _bucket([s.get("sinr") for s in samples], per)
     stamps = [s["ts"] for s in samples]
     spans: list[list[int]] = []
     for zone in zones:
@@ -829,30 +834,36 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
             verdict = ""
         radio_block = (
             f'<div class="chartbox">{radio_plot}</div>'
-            '<p class="sub"><strong>One score, and it is the worse of two '
-            'things, not the average of four.</strong> Strength (RSRP) is how '
-            'much of this cell\'s signal arrives — distance and concrete. '
-            'Quality (SINR) is how much of what arrives is the signal rather '
-            'than noise and other transmitters — interference and congestion. '
-            'The shaded area is the score: whichever is lower, because a link '
-            'fails from either end. An average would let a strong signal hide '
-            'a filthy one, which is the exact case worth finding.</p>'
-            '<p class="sub">RSRQ and RSSI are in the table below rather than in '
-            'the score: they restate the relationship between those two rather '
+            '<p class="sub"><strong>Height is how much signal arrives; colour '
+            'is how much of it is usable.</strong> Height is RSRP in dBm, the '
+            'number the modem itself reports &mdash; further down the chart '
+            'means further from the cell, or more concrete in the way. Colour '
+            'and thickness are SINR: how much of what arrives is the signal '
+            'rather than noise and other transmitters.</p>'
+            '<p class="sub"><strong>A line that stays high but turns red is the '
+            'case worth finding.</strong> Plenty of signal, almost none of it '
+            'usable &mdash; "full bars, nothing works". No antenna fixes that '
+            'one; it is interference or a busy cell. A line that simply sinks '
+            'is the opposite problem, a coverage hole, and that one a better '
+            'antenna or a repeater can move.</p>'
+            '<p class="sub">RSRQ and RSSI are in the table below rather than on '
+            'the chart: they restate the relationship between those two rather '
             'than adding a third independent fact.</p>'
             + (f'<p class="sub">{verdict}</p>' if verdict else "")
             + '<dl class="stats">' + "".join([
                 _stat("Median score", f"{score['median']:g} — {score['band']}"),
                 _stat("Worst", f"{score['worst']:g}"),
-                _stat("Limited by",
-                      (limiting or "—").title()),
+                _stat("Limited by", (limiting or "—").title()),
                 _stat("At its worst",
                       (score.get("worst_limited_by") or "—").title()),
             ]) + "</dl>"
-            '<p class="sub">The bands — poor, fair, good, excellent — are the '
+            '<p class="sub">The score behind those figures is the <em>worse</em> '
+            'of the two, never the average: a link fails from either end, and '
+            'an average would let a strong signal hide a filthy one. The bands '
+            '&mdash; and the dB ranges in the key above &mdash; are the '
             'conventional ones for LTE. They have not been checked against what '
-            'this robot actually needs, so read the shape of the line and which '
-            'half is limiting it, rather than the number on its own.</p>')
+            'this robot actually needs, so read the shape of the line and where '
+            'it changes colour rather than the number on its own.</p>')
     else:
         radio_block = ""
 
