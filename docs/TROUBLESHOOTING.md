@@ -119,18 +119,32 @@ The real reason for a padding mismatch appears only in the server's own log, as
 `rsa routines::padding check failed`.
 
 **"the server is busy running a test"** means a previous session is still held
-open on that port. Downlink runs with `-t 0`, so if the control connection dies
-mid-walk the server never learns the client is gone. It can block the next walk
-entirely. Restart the relevant unit on the server:
+open on that port. When a rig's link dies mid-test the server never learns the
+client has gone, and until it gives up every later test is refused.
+
+Since 2026-09-21 both instances run with `--rcv-timeout 15000`, so a silent
+session is dropped after 15 seconds instead of the 120 the default allows. If
+you are still seeing this, check the running process rather than the file:
+
+```bash
+systemctl show -p ExecStart --value viabot-iperf3@5201 | grep -o -- '--rcv-timeout [0-9]*'
+```
+
+Nothing printed means the server is on an older unit and needs
+`git pull && sudo ./server/setup.sh --domain ...` on the box itself. An update
+applied to the rig does not touch the server.
+
+To clear one by hand in the meantime:
 
 ```bash
 sudo systemctl restart viabot-iperf3@5201 viabot-iperf3@5202
 ```
 
-**Silence from `udp_up` with almost no `uplink_loaded` seconds** is a known bug.
-The loop reading iperf3's output has no timeout, so a hung test takes the rest
-of the walk with it and logs nothing. See the open defects in
-[CODE-TOUR.md](CODE-TOUR.md#things-that-are-wrong-right-now).
+**Silence from `udp_up` with almost no `uplink_loaded` seconds** used to mean a
+hung test that took the rest of the walk with it and logged nothing. A watchdog
+now kills a test after 45 seconds of silence, so look for "the test stopped
+responding and was restarted" in the event log. Seeing that repeatedly is a
+link problem rather than a rig problem.
 
 ## The camera is not recording
 
