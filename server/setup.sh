@@ -256,6 +256,15 @@ systemctl is-active --quiet viabot-receiver && ok "receiver running" \
 for port in "$UPLINK_PORT" "$DOWNLINK_PORT"; do
   systemctl is-active --quiet "viabot-iperf3@$port" && ok "iperf3 on $port running" \
     || warn "iperf3 on $port is not running: journalctl -u viabot-iperf3@$port -n 20"
+  # Check the running process, not the file on disk. A stale unit is exactly
+  # how this silently fails to take, and without it one rig dying mid-test
+  # blocks the port for two minutes and can take out a whole walk.
+  if systemctl show -p ExecStart --value "viabot-iperf3@$port" \
+       | grep -q -- "--rcv-timeout"; then
+    ok "iperf3 on $port drops stuck sessions"
+  else
+    warn "iperf3 on $port has no --rcv-timeout, so a rig that dies mid-test will block it for 120s"
+  fi
 done
 curl -fsS --max-time 5 "http://127.0.0.1:8089/healthz" >/dev/null \
   && ok "receiver answered /healthz" || warn "receiver did not answer locally"

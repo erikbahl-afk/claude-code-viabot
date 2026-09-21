@@ -20,7 +20,35 @@ Wants=network-online.target
 Type=simple
 User=viabot
 Group=viabot
+# --rcv-timeout is the one that matters, and the default is the problem.
+#
+# One iperf3 server runs one test at a time. When a rig's link dies mid-test
+# the server never learns the client has gone: it is left holding a live TCP
+# control connection that has simply stopped talking. Until it gives up, every
+# later test gets "the server is busy running a test. try again later".
+#
+# The default it gives up after is 120 seconds. That took run aew-test-03 out
+# entirely on 2026-09-18: downlink was refused 0.3 s into the walk, the
+# restart backoff reached its 60 s ceiling within a minute, and the direction
+# never ran again for the remaining nine minutes.
+#
+# Measured against 3.16, freezing a client mid-test with SIGSTOP so the socket
+# stays open and silent, which is what a rig in a dead zone looks like:
+#
+#   no timeouts         still busy at 3 s, 12 s and 25 s
+#   --rcv-timeout 8000  busy at 3 s, free by 12 s
+#
+# --idle-timeout does NOT do this, despite reading as though it should. It
+# covers a server stuck with no connection at all, not one holding a dead
+# test, and it made no difference in the same experiment. Do not swap it in.
+#
+# 15 s is chosen to sit above any silence inside a legitimate 10 s uplink
+# burst and well below the 30 s cycle, so the server is free again before the
+# rig comes back. Reverse (downlink) tests are unaffected because the server
+# is sending rather than receiving: 30 s, 45 s and 100 s reverse runs all
+# completed against a 15 s timeout.
 ExecStart=/usr/bin/iperf3 --server --port %i \
+  --rcv-timeout 15000 \
   --rsa-private-key-path /etc/viabot/iperf3_private.pem \
   --authorized-users-path /etc/viabot/iperf3_users.csv
 Restart=always

@@ -179,9 +179,43 @@ needs both protocols on both ports.
 
 ### Two iperf3 instances, on purpose
 
-One iperf3 server runs one test at a time — a second client is told "the server
-is busy" — and the rig measures both directions at once, because a teleop
-session is asymmetric and the two halves fail differently.
+One iperf3 server runs one test at a time, and a second client is told "the
+server is busy". The rig measures both directions at once, because a teleop
+session is asymmetric and the two halves fail differently, so it needs two.
+
+### Stuck sessions, and why the default is dangerous
+
+When a rig's link dies mid-test, the server does not find out. It is left
+holding a live TCP control connection that has simply stopped talking, and
+until it gives up, every later test is refused with "the server is busy running
+a test".
+
+**iperf3 waits 120 seconds by default.** That is long enough to take a whole
+walk out. On 2026-09-18 run `aew-test-03` was refused 0.3 seconds in, the
+rig's restart backoff reached its 60-second ceiling within a minute, and
+downlink never ran again for the remaining nine minutes of the walk.
+
+Both instances therefore run with `--rcv-timeout 15000`, which drops a silent
+session after 15 seconds instead. Measured against 3.16 by freezing a client
+mid-test with `SIGSTOP`, so the socket stays open and goes quiet, which is what
+a rig in a dead zone looks like from here:
+
+| Server | 3 s | 12 s | 25 s |
+|---|---|---|---|
+| No timeouts (the old default) | busy | busy | busy |
+| `--rcv-timeout 8000` | busy | free | free |
+
+**`--idle-timeout` is not the fix**, despite reading as though it should be. It
+covers a server stuck with no connection at all rather than one holding a dead
+test, and it made no difference in the same experiment. Someone will try to
+swap it in.
+
+The timeout does not affect downlink, because there the server is sending
+rather than receiving. Reverse tests of 30, 45 and 100 seconds all completed
+cleanly against a 15-second timeout.
+
+`setup.sh` checks the running process for the flag rather than the file on
+disk, because a stale unit is how this silently fails to take.
 
 ## Pointing a rig at it
 

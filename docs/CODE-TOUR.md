@@ -186,21 +186,12 @@ Known and unfixed as of 2026-09-21:
    against it. The plan is to step downlink in time with uplink so both go quiet
    together.
 
-2. **A stuck iperf3 session on the server blocks the next walk.** Downlink uses
-   `-t 0`, so there is no natural end for the server to wait for. If the control
-   connection dies mid-walk the server keeps holding the session and the next run
-   gets "the server is busy running a test". This killed run `aew-test-03` on
-   2026-09-18: downlink never ran at all, and the backoff reached 60 seconds
-   within a minute and stayed there for the rest of the walk. The fix is
-   `--idle-timeout` on the server, which is a change under `server/` and needs a
-   separate deploy.
-
-3. **Load-test marking is imprecise.** The loaded window is predicted from the
+2. **Load-test marking is imprecise.** The loaded window is predicted from the
    configured block length rather than observed from iperf3's own output. Real
    walks mark around 31% of seconds where 43% is expected, which means some
    genuinely loaded seconds are being judged as if they were clean.
 
-4. **Recovery from a dead zone may be far slower than documented.** The only
+3. **Recovery from a dead zone may be far slower than documented.** The only
    figure anyone has is 10 to 15 seconds, from one foil test in a good-signal
    area. On 2026-09-18 run `aew-test-02` showed an 88-second dead zone that ran
    to the end of the walk, with the operator reporting roughly two minutes with
@@ -222,6 +213,13 @@ Known and unfixed as of 2026-09-21:
   walk than the duty cycle should deliver.
 * The samples CSV was missing `udp_up_*`, `udp_down_*` and `uplink_loaded`, so it
   could not show which seconds were excluded. It carries them now.
+* A rig whose link died mid-test used to wedge the iperf3 server for 120
+  seconds, refusing every later test. That took run `aew-test-03` out entirely.
+  Both server instances now run with `--rcv-timeout 15000`. Note that
+  `--idle-timeout` reads as though it would fix this and does not: it covers a
+  server with no connection at all rather than one holding a dead test, and it
+  made no difference when measured. This one needs a deploy on the server box,
+  not just "Apply update" on the rig.
 
 ## What has never been verified
 
