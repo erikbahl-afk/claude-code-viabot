@@ -459,3 +459,42 @@ def test_a_healthy_duty_cycle_gets_no_coverage_warning():
     assert stats["uplink_coverage_pct"] == 100.0
     assert "failing rather than resting" not in report.render_html(
         dict(REPORT, under_load=stats))
+
+
+# ---- turning footage that was recorded sideways ----------------------------
+
+def test_the_report_offers_to_turn_the_video():
+    """camera.rotate fixes footage not yet recorded. A published report is
+    final by design and the clips beside it are the files that were uploaded,
+    so everything already on the server needs turning at the viewer instead."""
+    page = render()
+    assert "data-rotate" in page
+    assert 'class="vrot"' in page
+
+
+def test_clips_stay_plain_links_in_the_markup():
+    """Script upgrades them to a player on the page, which is the only way the
+    turn control can reach them. Without script, and opened off a USB stick,
+    they have to still be links or the footage is unreachable."""
+    page = render()
+    assert '<a href="clips/deadzone-01-x-45s.mp4" data-clip=' in page
+
+
+def test_the_clip_player_is_absent_when_no_clip_was_cut():
+    """A player that can never be filled is worse than no player."""
+    built = dict(REPORT, dead_zones=[{"idx": 1, "start_ts": BASE, "duration_s": 9.0,
+                                      "clip_error": "no video covers this dead zone"}])
+    page = report.render_html(built)
+    assert 'id="clipPlayer"' not in page
+    assert "no video covers this dead zone" in page
+
+
+def test_the_turn_control_is_not_a_tab():
+    """A button outside the tab bar wearing the tab class threw inside show()
+    on every report once, killing everything later in the script while the
+    page still looked right. The tab script now scopes itself, and nothing new
+    should test that scoping in production."""
+    page = render()
+    rotate = page[page.index("data-rotate"):]
+    assert 'class="tab"' not in rotate[:200]
+    assert "data-tab" not in rotate[:200]

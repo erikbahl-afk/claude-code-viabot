@@ -19,6 +19,17 @@ them.
 
 Both tabs print sensibly if it ever needs to be a PDF.
 
+There is a **Rotate** button under each player, for footage from a camera
+mounted on its side. It turns the picture 90 degrees at a time, remembers the
+choice for the next report you open, and changes only how the video is shown
+rather than the file. `camera.rotate` in the rig's config is the proper fix for
+footage not yet recorded; this is for everything already uploaded, because a
+published report can never be re-rendered.
+
+Clicking a dead-zone clip opens it in a player on the page rather than a new
+tab, which is what lets the Rotate button reach it. Without JavaScript, or
+opened straight off a USB stick, the clips stay ordinary download links.
+
 ## What gets uploaded, and what does not
 
 The clips go automatically. A typical walk is a few tens of megabytes.
