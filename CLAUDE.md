@@ -13,7 +13,7 @@ Read `docs/ARCHITECTURE.md` before making structural changes.
 
 Erik. New to development workflows and to git. He works through the Claude web
 interface and applies changes by merging a pull request on github.com and
-pressing "Apply update" on the rig's dashboard — see `docs/WORKFLOW.md`.
+pressing "Apply update" on the rig's dashboard. See `docs/WORKFLOW.md`.
 
 Consequences for how to work here:
 
@@ -45,11 +45,11 @@ it will silently measure the wrong interface. **iperf3 is pinned differently
 from ping**: `-B` takes an *address*, not an interface name, so `-B eth0` fails
 with "Name or service not known" and the test never starts. `udpload.interface_address()`
 resolves it, and falls back to the routing table when the modem is between
-leases — binding is worth having, but not at the cost of a test that refuses to
+leases. Binding is worth having, but not at the cost of a test that refuses to
 run.
 
 **Don't enable iperf3 or `udp_load` by default.** The SIM is unlimited, so this
-is not about the data bill — the *example* config ships them off because a fresh
+is not about the data bill. The *example* config ships them off because a fresh
 clone has no server to talk to, and tests assert that. The rig's own
 `config/config.yaml` has `udp_load` and `publish` switched on and pointed at
 `viabotsurveys.com`.
@@ -62,7 +62,7 @@ and stops it alongside the camera, for the same reasons.
 
 **`udp_load` bitrates are a compromise, and the uplink one has a hard ceiling
 above it.** A live Formant teleop session on 2026-09-12 sent **645 kbit/s mean,
-764 peak** robot-to-operator and **64 kbit/s mean, 104 peak** the other way —
+764 peak** robot-to-operator and **64 kbit/s mean, 104 peak** the other way:
 one robot, one camera, 37 seconds. Against that, 5 Mbit/s up has been quoted for
 teleop from memory, unsourced. `uplink_bitrate: 3M` splits them: ~4.6x the
 measured session, and about two thirds of this link's own measured uplink
@@ -72,14 +72,14 @@ That ceiling is the constraint. Ping runs alongside the load and shares the
 modem's buffer with it, so a rate at or above the link's capacity manufactures
 dead zones the garage did not cause. The uplink test therefore runs in bursts
 with silence between them, and the loaded seconds are thrown out of dead-zone
-detection — but that bounds the damage, it does not license any rate. **Testing
+detection, but that bounds the damage rather than licensing any rate. **Testing
 high is the safe direction only up to the point where the test becomes the
 failure.** Raise
 it only from a measurement of what a robot really sends with every camera an
 operator would open; to ask "could this spot carry 5 Mbit/s" without disturbing
 a survey, use `./scripts/capacity_test.sh --udp 5M`.
 
-`downlink_bitrate: 5M` is not a model of anything — the real command stream is
+`downlink_bitrate: 5M` is not a model of anything. The real command stream is
 64 kbit/s. It is a headroom check, affordable only because downlink measured
 29.4 Mbit/s. Do not copy that reasoning to the uplink.
 
@@ -102,7 +102,7 @@ the sender's number.
 
 **The modem holds the buffer, not the router.** Measured 2026-09-18: offered 12
 Mbit/s up, and the router's `4G-LTE` transmit counter showed 12,530 kbit/s
-sustained — it handed every byte straight to the modem rather than queueing.
+sustained. It handed every byte straight to the modem rather than queueing.
 So the router's qdisc never backs up and there is nothing there to shrink or
 manage; the bloat is inside the modem firmware, out of reach. The only lever on
 uplink congestion is **sending less**. The router's counters are still worth
@@ -111,7 +111,7 @@ second apart is a real local uplink throughput measurement, needing nothing in
 Dallas.
 
 **Uplink is the half that matters most, and it cannot be measured at the rig.**
-The robot *sends* video, so the heavy stream leaves the garage — and cellular
+The robot *sends* video, so the heavy stream leaves the garage, and cellular
 uplink is the weaker direction, so measuring only downlink flatters every
 garage. iperf3 reports jitter and loss only at the receiving end, which for
 uplink is the server: hence blocks, `--get-server-output`, and
@@ -119,14 +119,14 @@ uplink is the server: hence blocks, `--get-server-output`, and
 afterwards. Do not "simplify" that into a live reading; there isn't one.
 
 **`udp_load.datagram_bytes` must stay at 1200.** iperf3 defaults to 32 KB UDP
-datagrams, which IP fragments into two dozen packets — lose any one and the
+datagrams, which IP fragments into two dozen packets. Lose any one and the
 whole datagram counts lost, so loss reads several times worse than a real
 video packet would see, and every garage looks terrible.
 
 **The drawtext escaping is not a typo.** `ESCAPED_COLON` in `workers/camera.py`
 is two backslashes because a filtergraph is unescaped twice on the way in. One
 backslash makes ffmpeg reject the whole graph, exit before writing a frame, and
-the worker restart it forever — which cost a real survey walk. Single-quoting
+the worker restart it forever, which cost a real survey walk. Single-quoting
 the value instead fails differently ("Both text and text file provided"). If you
 touch that string, run `test_overlay_colons_carry_two_backslashes` and, where
 ffmpeg exists, `test_the_overlay_filtergraph_is_accepted_by_ffmpeg`.
@@ -138,7 +138,7 @@ inconvenience, losing every frame is a wasted trip to a garage.
 
 **This rig loses power for real.** It runs off a battery through a
 screw-terminal splice, and it has already died mid-operation more than once.
-SQLite therefore runs `synchronous=FULL`, not NORMAL — under NORMAL a commit is
+SQLite therefore runs `synchronous=FULL`, not NORMAL. Under NORMAL a commit is
 acknowledged before it reaches the card, and a completed walk came back with its
 samples intact but no result recorded. At one row a second the cost is not
 measurable. For the same reason an interrupted run is analysed on the next
@@ -147,7 +147,7 @@ discarding it means driving back to the garage.
 
 **A walk shorter than one uplink cycle measures no uplink at all.** Uplink loss
 is only countable at the far end, so the rig sends a fixed burst
-(`uplink_block_s`, 10 s) and then asks the server what arrived — a burst cut
+(`uplink_block_s`, 10 s) and then asks the server what arrived. A burst cut
 short by the run ending reports nothing, and the burst is followed by
 `uplink_idle_s` (20 s) of silence, so the walk has to outlast the whole cycle.
 A 23-second test walk therefore has a full downlink trace and no uplink
@@ -157,25 +157,25 @@ worth of uplink is lost at the end.
 
 **The uplink load runs in bursts because a continuous one measures itself.**
 The offered rate is above what a robot sends, and the modem holds roughly
-1.75 Mbit (219 KB) of buffer — derived 2026-09-18 from a real walk's own median
+1.75 Mbit (219 KB) of buffer, derived 2026-09-18 from a real walk's own median
 RTT of 1381 ms against a 32 ms base and a 1.3 Mbit/s drain. Offer more than the
 link can carry and that buffer fills in about a second, after which everything
 sharing it queues behind the load test: ping included. That is what produced a
 42.3% runnable reading at a spot with good signal. Fill time scales inversely
-with the overshoot — 3M into 1.3M fills in 1 s, 750k into 700k takes 35 s — so
+with the overshoot (3M into 1.3M fills in 1 s, 750k into 700k takes 35 s), so
 the fix is not a gentler rate but a burst short enough that the queue cannot
 build, and a gap long enough that it drains.
 
 Seconds inside a burst, and `uplink_settle_s` after it, are written to
 `samples.uplink_loaded` (2 sending, 1 settling) and **excluded from dead-zone
-detection entirely** — `deadzones.measurable()`. They are dropped from the
+detection entirely** by `deadzones.measurable()`. They are dropped from the
 percentage rather than counted as good, exactly as paused seconds are, and the
 report prints both `walked_s` and `judged_s`. Three things follow that are easy
 to break:
 
 - The exclusion leaves a hole in the timeline, and a hole normally means a
-  pause, which the detector refuses to stitch across. A burst is not a pause —
-  the walk carried on — so each surviving sample carries `loaded_before_s` and
+  pause, which the detector refuses to stitch across. A burst is not a pause. The walk
+  carried on, so each surviving sample carries `loaded_before_s` and
   `deadzones._gap()` subtracts it. Without that one bad ramp returns as three
   zones with three nearly identical clips.
 - "No stream" for uplink must count only the seconds the rig was *sending*
@@ -191,12 +191,12 @@ measurement.** `report.saturation()` counts the seconds delivering less than
 matters because bufferbloat *saturates*: once the buffer is full the latency
 stops rising, so a link that was slightly short and one that was hopelessly
 short look identical in the trace. There is no honest way to recover what the
-numbers would have been — the answer is to offer less and walk it again.
+numbers would have been. The answer is to offer less and walk it again.
 
 **A worker that finishes its work is not a worker that failed.** `Worker._loop`
 backs off exponentially between restarts, which is right for something that
 cannot start and wrong for the uplink load test, which returns after every
-burst *by design*. Unreset, the gap doubled — 2, 4, 8, 16, 32, 60 —
+burst *by design*. Unreset, the gap doubled (2, 4, 8, 16, 32, 60)
 until two thirds of a walk carried no uplink reading, indistinguishable from
 coverage gaps. A `run_once()` lasting at least `healthy_run_s` now resets the
 delay and is not announced as a restart. Keep that distinction if you add a
@@ -204,8 +204,8 @@ worker that works in blocks.
 
 **iperf3 3.17 changed the credential encryption, and it is not compatible.**
 Before 3.17 the client encrypts with PKCS#1 v1.5 padding; from 3.17 it uses
-OAEP. A mismatch is rejected as **"test authorization failed"** — the same three
-words a wrong password gets — and the real reason, `rsa routines::padding check
+OAEP. A mismatch is rejected as **"test authorization failed"**, the same three
+words a wrong password gets, and the real reason, `rsa routines::padding check
 failed`, appears *only in the server's own log*. This cost a long hunt with
 every credential provably correct: the rig runs 3.18 (Raspberry Pi OS trixie),
 the Dallas server runs 3.16 (Ubuntu 24.04). `udp_load.auth_padding: auto` tries
@@ -216,7 +216,7 @@ before anything else.
 
 **iperf3 hot-reloads the password but caches the key.** Measured against 3.16:
 the `--authorized-users-path` file is re-read on every connection, so a rotated
-password takes effect at once — but the `--rsa-private-key-path` is read once at
+password takes effect at once. But the `--rsa-private-key-path` is read once at
 startup, so a rotated *key* does nothing until the server is restarted, and the
 running server keeps accepting the old one. Rotating on the server therefore
 means restarting `viabot-iperf3@5201` and `@5202` *and* copying the new
@@ -225,7 +225,7 @@ failed" with a password that matches and a clock that is perfect.
 
 **iperf3 authentication fails on a clock, not just on a password.** Every test
 is signed with a timestamp, and a client more than **10 seconds** out is
-rejected — measured against iperf3 3.16: 10s authenticates, 11s does not, and
+rejected. Measured against iperf3 3.16: 10s authenticates, 11s does not, and
 the message is "test authorization failed", exactly what a wrong password gets.
 This Pi has no RTC, so an unsynchronised clock silently stops `udp_load`
 working and points the blame at the credentials. `capacity_test.sh` reads the
@@ -233,8 +233,8 @@ server's clock off an HTTPS `Date:` header before testing, and `udpload.parse_er
 spells out both causes.
 
 **The radio plot puts dBm on the axis and quality in the colour.** Height is
-RSRP as the modem reports it — a number that can be checked against the router
-rather than taken on trust — and the line's colour *and thickness* are SINR. A
+RSRP as the modem reports it, a number that can be checked against the router
+rather than taken on trust, and the line's colour *and thickness* are SINR. A
 line that stays high and turns red is the case no single number catches: plenty
 of signal, almost none of it usable. Quality is four named steps rather than a
 smooth gradient, and **never travels as colour alone**: red against green is the
@@ -246,27 +246,27 @@ can be compared against each other.
 
 **The radio score is the worse of two numbers, never the average.** RSRP says
 how much of the cell's signal arrives; SINR says how much of what arrives is
-signal rather than noise. They fail independently and need different remedies —
-weak-but-clean is a coverage hole an antenna can help, strong-but-dirty is
-interference no antenna touches — so `radio.rate()` takes the minimum and names
+signal rather than noise. They fail independently and need different remedies.
+Weak-but-clean is a coverage hole an antenna can help, strong-but-dirty is
+interference no antenna touches, so `radio.rate()` takes the minimum and names
 the limiting half. An average lets a strong signal hide a filthy one, which is
 the exact case a survey exists to find. RSSI and RSRQ are deliberately *not* in
 the score: the four numbers carry two degrees of freedom, and those two restate
 the relationship between the other two. The band cut points are the conventional
-LTE ones and are **unvalidated for this robot** — see `docs/UNVERIFIED.md`.
+LTE ones and are **unvalidated for this robot**. See `docs/UNVERIFIED.md`.
 
 **Timestamps are the product.** Video correlation depends entirely on the system
 clock, and the Pi has no RTC. Preserve `clock_synced` reporting on samples, the
 control page, and the start-of-run warning.
 
 **The phone is a controller, not a viewer.** Erik asked for one screen with
-Start / Pause / End, a small connection readout, and rig health — nothing else.
+Start / Pause / End, a small connection readout, and rig health, nothing else.
 Results are read on a laptop afterwards. Resist adding reports, charts or video
 to the phone; the screen is small and he is walking.
 
 **The app cannot use `sudo`, and never could.** `viabot-survey.service` runs
 with `CapabilityBoundingSet=CAP_NET_BIND_SERVICE`; a bounding set without
-`CAP_SETUID`/`CAP_SETGID` makes sudo fail outright — *"unable to change to root
+`CAP_SETUID`/`CAP_SETGID` makes sudo fail outright with *"unable to change to root
 gid: Operation not permitted"*. The identical command from a login shell
 succeeds, which is what hid this for so long: every manual test of "Apply
 update" passed while the button did nothing. So the app asks for an update by
@@ -275,7 +275,7 @@ update. Anything else the app needs from systemd must go the same way; do not
 add a sudo call to the app and test it over SSH.
 
 **"The rig replied" does not mean the rig restarted.** `update.sh` fetches,
-installs, and only then restarts the service — and the *old* process answers
+installs, and only then restarts the service, and the *old* process answers
 `/api/health` perfectly happily throughout. The dashboard used to reload on the
 first successful reply, about two seconds in, landing back on the old process
 still showing the update as available. `/api/health` reports `started_at`, and
@@ -284,13 +284,13 @@ back must do the same.
 
 **The report is written before the full video exists, so the page asks.** The
 recording is uploaded later, on request, and nothing re-renders the report when
-it lands — `render_html(full_video=...)` is never passed True by anything. So
+it lands, because `render_html(full_video=...)` is never passed True by anything. So
 the page carries the player hidden and the offer visible, and a same-origin
 `HEAD video/full.mp4` on load swaps them. No script, or opened from a USB stick,
 falls back to the offer. Do not give an element outside the tab bar the `tab`
 class: the tab script selects `.tabs [data-tab]` now, but it used to select
 `.tab`, and the request button wearing that class threw inside `show()` on every
-report — killing everything later in the script while the page still looked
+report, killing everything later in the script while the page still looked
 right.
 
 **Camera failure must be impossible to miss.** A rig whose camera has died is
@@ -304,7 +304,7 @@ symptom of forgetting is that the merged change appears to do nothing at all.
 Say so in any pull request that touches `server/`.
 
 **A published report can never be changed.** `_append_chunk` treats a complete
-file as final, and `enqueue_upload` leaves a `done` row done — both deliberate,
+file as final, and `enqueue_upload` leaves a `done` row done. Both are deliberate,
 so a re-analysis cannot clobber an upload in flight. The consequence is that
 improvements to the report page reach the next walk's report and never the ones
 already uploaded.
@@ -317,7 +317,7 @@ anything new that talks to the network needs the same treatment.
 **Publishing assumes the power will be cut.** A customer may switch the rig off
 the moment a walk ends, or halfway through a 60 MB clip. The upload queue is in
 SQLite, progress is recorded per chunk, and a resume always asks the receiver
-how many bytes it holds rather than trusting the local number — power can be
+how many bytes it holds rather than trusting the local number, because power can be
 cut between a chunk landing and the rig learning that it did. Do not "optimise"
 that HEAD away. `tests/test_publish.py` interrupts real transfers to a real
 server; keep it that way, because nothing else catches this class of bug.
@@ -325,9 +325,9 @@ server; keep it that way, because nothing else catches this class of bug.
 **Enabling `udp_load` moves the headline number.** Dead zones are detected from
 ping, which shares the uplink with the load test. Since 2026-09-18 the loaded
 seconds are excluded rather than judged, so the percentage is an estimate from
-roughly two thirds of the walk rather than all of it — still a fair sample at a
+roughly two thirds of the walk rather than all of it. Still a fair sample at a
 steady pace, but not the same measurement. Runs from before and after are not
-comparable, and the thresholds were conceived for an idle link — see
+comparable, and the thresholds were conceived for an idle link. See
 `docs/UNVERIFIED.md`.
 
 **Pause means "this time did not happen".** It stops measuring and recording
@@ -344,9 +344,9 @@ indoor positioning. Do not make Pause merely cosmetic.
 | `viabot_survey/app.py` | Flask: captive portal, API, report building |
 | `viabot_survey/workers/` | One file per measurement source, all subclass `base.Worker` |
 | `viabot_survey/report.py` | Builds a run's result and renders it as the published page |
-| `viabot_survey/chart.py` | Draws the throughput and radio plots as inline SVG — no library, because the report must open offline |
+| `viabot_survey/chart.py` | Draws the throughput and radio plots as inline SVG, no library, because the report must open offline |
 | `viabot_survey/radio.py` | RSRP + SINR into one 0-100 score, and which of the two is limiting it |
-| `viabot_survey/workers/udpload.py` | Jitter and loss under teleop-sized UDP streams, both directions — the load case ping cannot see |
+| `viabot_survey/workers/udpload.py` | Jitter and loss under teleop-sized UDP streams, both directions. The load case ping cannot see |
 | `viabot_survey/publish.py` | Resumable upload client; the receiver's byte count is the authority |
 | `viabot_survey/storage.py` | SQLite; add columns to `SAMPLE_COLUMNS` when extending `samples` |
 | `server/viabot_receiver.py` | The cloud side: accepts uploads, serves reports. Deployed separately, not on the rig |
@@ -358,12 +358,12 @@ indoor positioning. Do not make Pause merely cosmetic.
 
 Configuration merges in three layers: the example file, then
 `config/config.yaml`, then `VIABOT_SECTION_KEY` env vars. Adding a key to the
-example file is what makes it exist — a user's older local config still boots.
+example file is what makes it exist. A user's older local config still boots.
 
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest        # 285 tests, no camera or rig needed
+.venv/bin/python -m pytest        # 316 tests, no camera or rig needed
 ```
 
 Most of the suite runs anywhere: workers are tested through their parsing and
@@ -372,8 +372,8 @@ Keep it that way for new tests.
 
 The exceptions are marked `requires_ffmpeg` / `requires_iperf3` and skip when
 the binary is absent. They
-exist because the two bugs that actually reached the rig — a filtergraph ffmpeg
-would not parse, and clip cutting that had never run — were both invisible to
+exist because the two bugs that actually reached the rig, a filtergraph ffmpeg
+would not parse and clip cutting that had never run, were both invisible to
 mocks. If you are changing the camera or clip code, install ffmpeg first
 (`apt-get install -y --no-install-recommends ffmpeg`) so they run.
 
@@ -386,7 +386,7 @@ Run the app locally without hijacking your own browser:
 ## Still open
 
 **Read `docs/UNVERIFIED.md` first.** No Claude session has ever had SSH access to
-the rig — every fact comes from Erik pasting terminal output, so verify rather
+the rig. Every fact comes from Erik pasting terminal output, so verify rather
 than assume. `scripts/preflight.sh` answers most hardware questions in one pass.
 
 The rig now runs: the access point comes up, the captive portal fires, a run
@@ -396,7 +396,7 @@ Specifically open:
 
 - Which SMA port is MAIN and which is DIV on the field router. Ports `a` and `c`
   are the two that produced working readings and the pair is in use, but the
-  tests never separated them — indoors the signal is strong enough that bare
+  tests never separated them. Indoors the signal is strong enough that bare
   connectors couple plenty of RF, so every configuration looked alike. Do not
   write this down as established.
 - The camera's real capabilities (`scripts/probe_camera.sh`).
@@ -406,12 +406,12 @@ Specifically open:
   of whether the script is actually right.
 - Whether the measured teleop bitrate holds across robots and camera
   settings. One session was measured; the config is set from it.
-- What the *modem* does thermally. The Pi is settled — an hour closed and
+- What the *modem* does thermally. The Pi is settled: an hour closed and
   recording peaked at 57.4 C with no throttling at all (2026-09-13), leaving
-  ~23 °C of headroom — but the modem has no sensor the Pi can read, and it
+  ~23 °C of headroom. But the modem has no sensor the Pi can read, and it
   works hardest exactly where signal is weak. Re-run `./scripts/thermal_test.sh`
   in a hot garage rather than assuming the bench figure transfers.
-- Dead-zone thresholds are invented — `deadzone.provisional: true` (80% loss or
+- Dead-zone thresholds are invented. `deadzone.provisional: true` (80% loss or
   1500 ms, sustained 5 s). The plan is to set them from one real survey walk.
   Do not quietly treat the current numbers as requirements. A finished run can
   be re-analysed with new ones via `POST /api/runs/<id>/analyse`.
@@ -422,6 +422,6 @@ Specifically open:
 
 Ask clarifying questions **before** building, not after. A large, plausible
 deliverable built on unverified assumptions is worse than a short question. When
-something is genuinely ambiguous — thresholds, hardware capability, what the
-robot actually needs — put the question to him rather than picking a default and
+something is genuinely ambiguous (thresholds, hardware capability, what the
+robot actually needs), put the question to him rather than picking a default and
 documenting the guess.
