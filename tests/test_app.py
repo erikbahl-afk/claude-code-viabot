@@ -173,6 +173,26 @@ def test_exported_timestamps_carry_their_zone(client, storage):
     assert re.search(r"[+-]\d{4}$", fields["iso_local"])
 
 
+def test_samples_csv_carries_the_load_test_and_the_exclusion_flag(client, storage):
+    """Without these the export cannot show which seconds were thrown out of
+    dead-zone detection, which is the first thing anyone asks when a headline
+    percentage looks wrong. They were missed when the load test was built."""
+    run_id = client.post("/api/run/start", json={"label": "L2"}).get_json()["run"]["id"]
+    storage.add_sample(run_id, time.time(), rtt_ms=50.0, status="good",
+                       uplink_loaded=2, udp_up_mbps=1.25, udp_up_loss_pct=18.0,
+                       udp_up_jitter_ms=35.0, udp_down_mbps=4.8,
+                       udp_down_loss_pct=0.2, udp_down_jitter_ms=2.0)
+    client.post("/api/run/stop")
+
+    text = client.get(f"/api/runs/{run_id}/samples.csv").get_data(as_text=True)
+    header, first = text.strip().splitlines()[:2]
+    fields = dict(zip(header.split(","), first.split(",")))
+    assert fields["uplink_loaded"] == "2"
+    assert fields["udp_up_mbps"] == "1.25"
+    assert fields["udp_up_loss_pct"] == "18.0"
+    assert fields["udp_down_mbps"] == "4.8"
+
+
 def test_csv_export_of_an_unknown_run_404s(client):
     assert client.get("/api/runs/nope/samples.csv").status_code == 404
 

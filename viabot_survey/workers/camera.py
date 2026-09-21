@@ -56,6 +56,20 @@ SEGMENT_RE = re.compile(r"^(\d{8})T(\d{6})Z\.mkv$")
 #: value is quoted, and reports the baffling "Both text and text file provided".
 ESCAPED_COLON = r"\\:"
 
+#: Degrees clockwise to the filter chain that turns the picture that far.
+#: ffmpeg's transpose counts 1 as clockwise and 2 as anticlockwise, which is
+#: easy to get backwards, so the mapping is written down once and tested.
+#:
+#: A camera mounted on its side is the normal reason to need this. If the top
+#: of the scene comes out on the *left* of the frame the picture is 90
+#: anticlockwise of upright, so it needs `rotate: 90` to put it back.
+ROTATIONS: dict[int, str] = {
+    0: "",
+    90: "transpose=1",
+    180: "transpose=1,transpose=1",
+    270: "transpose=2",
+}
+
 # Checked in order; the first that exists is used for the burned-in clock.
 FONT_CANDIDATES = (
     "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
@@ -139,7 +153,7 @@ class CameraWorker(Worker):
     def __init__(self, device: str = "/dev/video0", width: int = 1280, height: int = 720,
                  fps: int = 10, mode: str = "overlay", segment_s: int = 300,
                  min_free_disk_mb: float = 2000, output_dir: Path | None = None,
-                 capture_fps: int | None = None,
+                 capture_fps: int | None = None, rotate: int = 0,
                  enabled: bool = True, **kwargs: Any) -> None:
         super().__init__(enabled=enabled, **kwargs)
         self.device = device
@@ -148,6 +162,8 @@ class CameraWorker(Worker):
         self.fps = int(fps)
         self.capture_fps = int(capture_fps) if capture_fps else None
         self.mode = mode if mode in ("overlay", "copy") else "overlay"
+        self.rotate = int(rotate) % 360 if int(rotate) % 90 == 0 else 0
+        self._warned_rotate_in_copy = False
         self.segment_s = max(10, int(segment_s))
         self.min_free_disk_mb = float(min_free_disk_mb)
         self.output_dir = Path(output_dir) if output_dir else None
@@ -215,9 +231,14 @@ class CameraWorker(Worker):
                  f"{format_utc_offset(offset)}")
         # Decimate before the overlay and encoder, so neither does work on
         # frames that are about to be dropped.
+        # Decimate, then rotate, then burn in the clock. Rotating before the
+        # overlay is what keeps the clock the right way up in the finished
+        # picture; rotating after it would turn the text on its side too.
+        turn = ROTATIONS.get(self.rotate, "")
         candidate = (
             f"fps={self.fps},"
-            f"drawtext=fontfile={font}"
+            + (f"{turn}," if turn else "")
+            + f"drawtext=fontfile={font}"
             f":text={label}"
             ":fontsize=22:fontcolor=white"
             ":box=1:boxcolor=black@0.6:boxborderw=6"
@@ -268,7 +289,18 @@ class CameraWorker(Worker):
         else:
             # Store the camera's native MJPEG untouched: no decode, no encode.
             # Nothing can be decimated without re-encoding, so this records at
-            # whatever rate the camera sends — larger files, but zero CPU.
+            # whatever rate the camera sends: larger files, but zero CPU.
+            #
+            # Rotation needs a filter, and a filter needs a re-encode, so copy
+            # mode cannot honour it. Say so rather than quietly recording
+            # sideways footage, because the operator set `rotate` expecting it
+            # to do something.
+            if self.rotate and not self._warned_rotate_in_copy:
+                self._warned_rotate_in_copy = True
+                self.emit("warning",
+                          f"camera.rotate is {self.rotate} but this run is "
+                          "recording in copy mode, which cannot rotate without "
+                          "re-encoding. The footage will be unrotated.")
             cmd += ["-c:v", "copy"]
 
         cmd += [
@@ -386,6 +418,7 @@ class CameraWorker(Worker):
             "device": self.device,
             "mode": self.effective_mode,
             "configured_mode": self.mode,
+            "rotate": self.rotate,
             "overlay": self._overlay_ok,
             "resolution": f"{self.width}x{self.height}@{self.fps}",
         }
@@ -428,6 +461,7 @@ class CameraWorker(Worker):
             "device": self.device,
             "mode": self.effective_mode,
             "configured_mode": self.mode,
+            "rotate": self.rotate,
             "overlay": self._overlay_ok,
             "resolution": f"{self.width}x{self.height}@{self.fps}",
             "capture_fps": self.capture_fps or "driver default",

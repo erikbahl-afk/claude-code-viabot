@@ -183,29 +183,45 @@ Known and unfixed as of 2026-09-21:
    29.4 Mbit/s that justifies that rate was measured at a good spot. In a garage
    dead spot downlink capacity may be well under 5 Mbit/s, in which case the same
    bufferbloat problem applies in the other direction with nothing guarding
-   against it.
+   against it. The plan is to step downlink in time with uplink so both go quiet
+   together.
 
-2. **A hung load test is invisible.** The loop that reads iperf3's output has no
-   timeout. On 2026-09-18, run `aew-test-03` logged nothing at all from `udp_up`
-   for a nine-minute walk, and only 13 seconds of `uplink_loaded` were recorded.
-   The worker appears healthy the whole time.
-
-3. **The report goes quiet when the load test produced nothing.** If one
-   direction is missing it says so with a reason. If both are missing the whole
-   section disappears, which reads as "nothing to report".
-
-4. **The samples CSV export is missing the load columns.** No `udp_up_*`,
-   `udp_down_*` or `uplink_loaded`, so the CSV cannot show which seconds were
-   excluded.
-
-5. **A stuck iperf3 session on the server blocks the next walk.** Downlink uses
+2. **A stuck iperf3 session on the server blocks the next walk.** Downlink uses
    `-t 0`, so there is no natural end for the server to wait for. If the control
    connection dies mid-walk the server keeps holding the session and the next run
-   gets "the server is busy running a test".
+   gets "the server is busy running a test". This killed run `aew-test-03` on
+   2026-09-18: downlink never ran at all, and the backoff reached 60 seconds
+   within a minute and stayed there for the rest of the walk. The fix is
+   `--idle-timeout` on the server, which is a change under `server/` and needs a
+   separate deploy.
 
-6. **Load-test marking is imprecise.** The loaded window is predicted from the
+3. **Load-test marking is imprecise.** The loaded window is predicted from the
    configured block length rather than observed from iperf3's own output. Real
-   walks mark around 31% of seconds where 43% is expected.
+   walks mark around 31% of seconds where 43% is expected, which means some
+   genuinely loaded seconds are being judged as if they were clean.
+
+4. **Recovery from a dead zone may be far slower than documented.** The only
+   figure anyone has is 10 to 15 seconds, from one foil test in a good-signal
+   area. On 2026-09-18 run `aew-test-02` showed an 88-second dead zone that ran
+   to the end of the walk, with the operator reporting roughly two minutes with
+   no recovery in an area known to have good reception. Whether the modem had
+   dropped registration or the data path was blocked is not yet established. The
+   samples for that run carry RSRP and cell ID throughout, so the data to settle
+   it already exists.
+
+### Fixed since this list was written
+
+* A hung load test used to be invisible. The loop reading iperf3's output had no
+  timeout, so a hang held `run_once` open for the rest of the walk while the
+  worker looked healthy and logged nothing. There is now a watchdog that kills a
+  test after `STALL_AFTER_S` of silence, which lets the normal restart path run
+  and put a reason in the event log.
+* The report used to drop the whole load section when neither direction produced
+  a reading, which read as "nothing to report". It now says the test was on and
+  produced nothing, and warns separately when the bursts covered far less of the
+  walk than the duty cycle should deliver.
+* The samples CSV was missing `udp_up_*`, `udp_down_*` and `uplink_loaded`, so it
+  could not show which seconds were excluded. It carries them now.
 
 ## What has never been verified
 

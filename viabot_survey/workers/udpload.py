@@ -52,6 +52,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from collections import deque
 from functools import lru_cache
@@ -93,6 +94,17 @@ DEFAULT_DATAGRAM_BYTES = 1200
 
 #: Readings older than this are not current any more.
 STALE_AFTER_S = 3.0
+
+#: A test that has said nothing for this long is hung, not slow.
+#:
+#: iperf3 prints an interval line every second while a test is running. The one
+#: legitimate silence is the end-of-test exchange with the server, which takes
+#: seconds. Reading its output with no timeout means a hung test blocks
+#: `run_once` forever, and because the worker never returns it is never
+#: restarted and never announces anything: it just looks healthy. Measured
+#: 2026-09-18, run `aew-test-03`: `udp_up` logged nothing at all for a
+#: nine-minute walk and recorded 13 seconds of load out of 566.
+STALL_AFTER_S = 45.0
 
 UPLINK, DOWNLINK = "upload", "download"
 
@@ -318,6 +330,8 @@ class UdpLoadWorker(Worker):
         # uplink: until then, nothing ping says is about the garage alone.
         self._load_until: float = 0.0
         self._sending_until: float = 0.0
+        self._last_output_ts: float = 0.0
+        self._stalls = 0
         self._offered_mbps = parse_bitrate_mbps(self.bitrate)
         # None = not yet known. "auto" settles it on the first rejection, which
         # is the only moment the answer is observable from this end.
@@ -393,7 +407,42 @@ class UdpLoadWorker(Worker):
             self.build_command(), stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
             text=True, errors="replace", bufsize=1, env=self.build_env())
+        self._last_output_ts = time.time()
+        self._watch_for_stall(self._proc)
         return self._proc
+
+    def _watch_for_stall(self, proc: subprocess.Popen) -> None:
+        """Kill a test that has stopped producing output.
+
+        Reading a pipe has no timeout of its own, so without this a hung
+        iperf3 holds `run_once` open for the rest of the walk. The worker then
+        never returns, never restarts, and never says anything, which is
+        indistinguishable from working. Killing the process ends the read,
+        which lets the normal restart path run and put a reason in the event
+        log.
+        """
+        def watch() -> None:
+            while proc.poll() is None:
+                if self._stop.wait(1.0):
+                    return
+                if time.time() - self._last_output_ts < STALL_AFTER_S:
+                    continue
+                if proc.poll() is not None:
+                    return
+                self._stalls += 1
+                log.warning("%s produced no output for %.0fs; killing it",
+                            self.name, STALL_AFTER_S)
+                self.emit("warning",
+                          f"{self.name}: the test stopped responding and was "
+                          f"restarted after {STALL_AFTER_S:.0f}s of silence")
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                return
+
+        threading.Thread(target=watch, name=f"{self.name}-stall",
+                         daemon=True).start()
 
     def _run_stream(self) -> None:
         """Downlink: one long-lived stream, read a line at a time."""
@@ -521,6 +570,8 @@ class UdpLoadWorker(Worker):
             self._on_backfill(backfill)
 
     def _consume(self, line: str) -> dict[str, Any] | None:
+        # Any output at all, parseable or not, means the test is still alive.
+        self._last_output_ts = time.time()
         self._last_line = line.strip() or self._last_line
         reading = parse_interval(line)
         if reading is None:
@@ -627,6 +678,7 @@ class UdpLoadWorker(Worker):
             "loss_pct": (self._latest or {}).get("loss_pct"),
             "jitter_ms": (self._latest or {}).get("jitter_ms"),
             "backfilled_samples": self._backfilled,
+            "stalls": self._stalls,
             "run_mb": round(self._run_bytes / 1024 ** 2, 1),
             "total_mb": round(self._total_bytes / 1024 ** 2, 1),
             "budget_mb": self.run_data_budget_mb,

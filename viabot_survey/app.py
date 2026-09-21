@@ -214,9 +214,16 @@ def create_app(config: Config, runner: SurveyRunner, storage: Storage,
     def api_export_samples(run_id: str):
         if storage.get_run(run_id) is None:
             return jsonify({"error": "unknown run"}), 404
+        # The load-test columns belong here too. Without them the export cannot
+        # show which seconds were excluded from dead-zone detection, which is
+        # the first thing anyone asks when a percentage looks wrong.
         columns = ["ts", "iso_utc", "iso_local", "status", "rtt_ms", "loss_pct",
                    "jitter_ms", "dns_ms", "rsrp", "rsrq", "sinr", "rssi", "band",
-                   "cell_id", "tech", "video_file", "video_offset_s",
+                   "cell_id", "tech",
+                   "uplink_loaded",
+                   "udp_up_mbps", "udp_up_loss_pct", "udp_up_jitter_ms",
+                   "udp_down_mbps", "udp_down_loss_pct", "udp_down_jitter_ms",
+                   "video_file", "video_offset_s",
                    "clock_synced", "undervoltage"]
 
         def generate():
