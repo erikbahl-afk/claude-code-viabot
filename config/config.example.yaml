@@ -369,6 +369,19 @@ camera:
   #           timestamps then come from the segment filename plus offset.
   #           Use this if the Pi struggles or you raise the resolution.
   mode: overlay
+  # Degrees clockwise to turn the picture, for a camera that is mounted on its
+  # side. 0, 90, 180 or 270; anything else is ignored.
+  #
+  # Which way round: if the top of the scene comes out on the LEFT of the
+  # frame, the picture is 90 anticlockwise of upright, so set 90 to put it
+  # back. Top on the right means set 270.
+  #
+  # Rotating needs a filter and a filter needs a re-encode, so this only works
+  # in "overlay" mode. In "copy" mode the rig says so in the event log and
+  # records unrotated rather than pretending. The rotation is applied before
+  # the clock is burned in, so the clock stays the right way up, and it is
+  # baked into the recording, so the dead-zone clips come out rotated too.
+  rotate: 0
   # Length of each video file, seconds. Shorter = less lost to a bad shutdown.
   segment_s: 300
   # Refuse to start (and stop an in-flight run) below this much free disk.

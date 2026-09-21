@@ -520,3 +520,54 @@ def test_a_negative_gap_is_not_a_gap():
                            idle_s=-5, settle_s=-1)
     assert worker.idle_s == 0.0
     assert worker.settle_s == 0.0
+
+
+# ---- the hang that was invisible -------------------------------------------
+
+def test_a_test_that_stops_talking_is_killed_rather_than_hanging_the_worker(monkeypatch):
+    """Reading a pipe has no timeout, so a hung iperf3 held run_once open for
+    the rest of the walk. The worker then never returned, never restarted and
+    never said anything, which looks exactly like working. On 2026-09-18 that
+    cost a nine-minute walk: udp_up logged nothing and recorded 13 seconds of
+    load out of 566."""
+    monkeypatch.setattr(udpload, "STALL_AFTER_S", 1.0)
+    events = []
+    worker = UdpLoadWorker(server="example.invalid", direction=UPLINK,
+                           on_event=lambda level, msg: events.append((level, msg)))
+    monkeypatch.setattr(worker, "build_command", lambda: ["sleep", "30"])
+    monkeypatch.setattr(worker, "build_env", lambda: None)
+
+    started = time.time()
+    proc = worker._launch()
+    proc.wait(timeout=15)                  # the watchdog must end this, not sleep
+    elapsed = time.time() - started
+
+    assert elapsed < 10, f"the hung process ran for {elapsed:.1f}s"
+    assert worker._stalls == 1
+    assert any("stopped responding" in message for _, message in events)
+
+
+def test_a_test_that_keeps_talking_is_left_alone(monkeypatch):
+    """The watchdog must not shoot a healthy long-running test. Downlink runs
+    with -t 0 and is meant to stream for the whole walk."""
+    monkeypatch.setattr(udpload, "STALL_AFTER_S", 2.0)
+    worker = UdpLoadWorker(server="example.invalid", direction=DOWNLINK)
+    monkeypatch.setattr(
+        worker, "build_command",
+        lambda: ["sh", "-c", "for i in 1 2 3 4 5 6; do echo tick; sleep 0.5; done"])
+    monkeypatch.setattr(worker, "build_env", lambda: None)
+
+    proc = worker._launch()
+    for line in proc.stdout:
+        worker._consume(line)
+    proc.wait(timeout=5)
+
+    assert proc.returncode == 0, "a talking process was killed"
+    assert worker._stalls == 0
+
+
+def test_the_stall_count_is_visible(monkeypatch):
+    """A worker that keeps being shot is a different problem from one that
+    never starts, and the dashboard should be able to tell them apart."""
+    worker = UdpLoadWorker(server="example.invalid", direction=UPLINK)
+    assert worker.snapshot()["stalls"] == 0

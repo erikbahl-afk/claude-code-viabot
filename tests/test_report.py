@@ -390,3 +390,72 @@ def test_a_run_with_no_load_test_gets_no_extra_caveat():
     every run, including runs where it cannot apply, does not."""
     page = report.render_html(dict(REPORT, quality=report.quality_stats(SAMPLES)))
     assert "the link a robot would find on arriving" not in page
+
+
+# ---- the section must never just disappear ---------------------------------
+
+def _no_load_walk(seconds=300):
+    return [{"ts": 1_700_000_000.0 + i, "rtt_ms": 45.0, "loss_pct": 0.0}
+            for i in range(seconds)]
+
+
+def test_a_load_test_that_produced_nothing_says_so_instead_of_vanishing():
+    """An absent section reads as 'nothing to report', which is the opposite of
+    the truth. Found from the outside by someone who concluded the section only
+    appears when there is packet loss, having compared three reports where the
+    one with no dead zones was also the one whose load test never ran."""
+    built = dict(REPORT, under_load=report.load_stats(
+        _no_load_walk(), {"enabled": True, "uplink_bitrate": "3M",
+                          "uplink_block_s": 10, "uplink_idle_s": 20}))
+    page = report.render_html(built)
+    assert "Under a teleop-sized load" in page
+    assert "produced no readings at all" in page
+
+
+def test_a_run_with_the_load_test_switched_off_keeps_the_section_hidden():
+    """The opposite failure: a section explaining an absence nobody asked for."""
+    built = dict(REPORT, under_load=report.load_stats(
+        _no_load_walk(), {"enabled": False}))
+    assert "Under a teleop-sized load" not in report.render_html(built)
+
+
+def test_the_page_says_when_the_bursts_covered_almost_none_of_the_walk():
+    """Run aew-test-03 recorded 13 seconds of load in a nine-minute walk and
+    the report presented what little it got without comment."""
+    samples = []
+    for i in range(600):
+        sending = i < 10                  # one burst in a ten-minute walk
+        samples.append({
+            "ts": 1_700_000_000.0 + i, "rtt_ms": 45.0, "loss_pct": 0.0,
+            "uplink_loaded": 2 if sending else 0,
+            "udp_up_loss_pct": 1.0 if sending else None,
+            "udp_up_jitter_ms": 3.0 if sending else None,
+            "udp_up_mbps": 2.9 if sending else None,
+        })
+    stats = report.load_stats(samples, {"enabled": True, "uplink_bitrate": "3M",
+                                        "uplink_block_s": 10, "uplink_idle_s": 20})
+    assert stats["uplink_expected_seconds"] == 200
+    assert stats["uplink_coverage_pct"] == 5.0
+
+    page = report.render_html(dict(REPORT, under_load=stats))
+    assert "covered only 10s" in page
+    assert "failing rather than resting" in page
+
+
+def test_a_healthy_duty_cycle_gets_no_coverage_warning():
+    """It fires on a broken run or it means nothing."""
+    samples = []
+    for i in range(600):
+        sending = (i % 30) < 10
+        samples.append({
+            "ts": 1_700_000_000.0 + i, "rtt_ms": 45.0, "loss_pct": 0.0,
+            "uplink_loaded": 2 if sending else 0,
+            "udp_up_loss_pct": 1.0 if sending else None,
+            "udp_up_jitter_ms": 3.0 if sending else None,
+            "udp_up_mbps": 2.9 if sending else None,
+        })
+    stats = report.load_stats(samples, {"enabled": True, "uplink_bitrate": "3M",
+                                        "uplink_block_s": 10, "uplink_idle_s": 20})
+    assert stats["uplink_coverage_pct"] == 100.0
+    assert "failing rather than resting" not in report.render_html(
+        dict(REPORT, under_load=stats))

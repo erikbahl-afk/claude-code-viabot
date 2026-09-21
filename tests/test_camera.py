@@ -308,3 +308,72 @@ def test_filter_works_rejects_a_broken_filtergraph():
     ok, error = filter_works("drawtext=this_is_not_an_option=1")
     assert ok is False
     assert error
+
+
+# ---- rotation, for a camera mounted on its side ----------------------------
+
+def test_rotation_turns_the_picture_before_the_clock_is_drawn():
+    """Order matters. Rotating after the overlay would turn the burned-in
+    clock on its side too, which is the one thing in the picture that has to
+    stay readable."""
+    worker = CameraWorker(mode="overlay", fps=10, rotate=90, enabled=False)
+    worker._overlay_ok = True
+    graph = worker.overlay_filter(1_700_000_000)
+    assert graph.index("transpose=1") < graph.index("drawtext")
+
+
+def test_the_transpose_direction_is_not_backwards():
+    """ffmpeg counts transpose=1 as clockwise and transpose=2 as
+    anticlockwise, which is easy to invert. A camera whose picture comes out
+    with the scene's top on the left needs 90 to put it right."""
+    def graph_for(degrees):
+        worker = CameraWorker(mode="overlay", fps=10, rotate=degrees, enabled=False)
+        worker._overlay_ok = True
+        return worker.overlay_filter(1_700_000_000)
+
+    assert "transpose=1," in graph_for(90)
+    assert "transpose=2," in graph_for(270)
+    assert "transpose=1,transpose=1," in graph_for(180)
+    assert "transpose" not in graph_for(0)
+
+
+def test_a_nonsense_rotation_is_ignored_rather_than_breaking_the_recording():
+    """A filtergraph ffmpeg will not parse records nothing at all, so a typo in
+    the config must not be able to produce one."""
+    for bad in (45, 17, -1, 1000):
+        assert CameraWorker(rotate=bad, enabled=False).rotate in (0, 90, 180, 270)
+
+
+def test_copy_mode_says_it_cannot_rotate_instead_of_recording_sideways(tmp_path):
+    """Rotating needs a filter and a filter needs a re-encode. Copy mode can do
+    neither, and an operator who set `rotate` is entitled to be told that
+    rather than finding out from the footage."""
+    events = []
+    worker = CameraWorker(mode="copy", rotate=90, enabled=False,
+                          on_event=lambda level, msg: events.append((level, msg)))
+    worker.build_command(tmp_path, 1_700_000_000)
+    assert any("copy mode" in message for _, message in events)
+
+
+def test_copy_mode_says_nothing_when_no_rotation_was_asked_for():
+    """A warning that fires on every run stops being a warning."""
+    events = []
+    worker = CameraWorker(mode="copy", rotate=0, enabled=False,
+                          on_event=lambda level, msg: events.append((level, msg)))
+    worker.build_command(Path("/tmp"), 1_700_000_000)
+    assert not any("rotate" in message for _, message in events)
+
+
+@requires_ffmpeg
+def test_every_rotation_produces_a_filtergraph_ffmpeg_accepts():
+    """Same reasoning as the overlay regression above: a graph ffmpeg refuses
+    means the rig records nothing at all, and no mock catches that."""
+    from viabot_survey.workers.camera import filter_works
+
+    if find_font() is None:
+        pytest.skip("no font installed to draw with")
+    for degrees in (0, 90, 180, 270):
+        worker = CameraWorker(mode="overlay", fps=10, rotate=degrees, enabled=False)
+        worker._overlay_ok = True
+        ok, error = filter_works(worker.overlay_filter(1_757_620_000))
+        assert ok, f"ffmpeg rejected rotate={degrees}: {error}"

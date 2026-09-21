@@ -293,6 +293,16 @@ def load_stats(samples: Sequence[dict],
                                   out["downlink"]["seconds_measured"])
     out["uplink_block_s"] = block_s
     out["uplink_idle_s"] = idle_s
+    out["enabled"] = bool(config.get("enabled"))
+    # What the duty cycle should have delivered. Uplink sends for block_s out
+    # of every block_s + idle_s, so anything far below that means the test was
+    # failing rather than resting, and the page has to be able to say which.
+    cycle_s = block_s + idle_s
+    expected = int(len(samples) * block_s / cycle_s) if cycle_s else 0
+    got = out["uplink"]["seconds_measured"]
+    out["uplink_expected_seconds"] = expected
+    out["uplink_coverage_pct"] = (round(100.0 * got / expected, 1)
+                                  if expected else None)
     return out
 
 
@@ -791,6 +801,16 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
             "and jitter below are a floor rather than a measurement of this "
             "garage. Lower udp_load.uplink_bitrate towards what the robot "
             "really sends and walk it again if you need the real numbers.")
+    coverage = (report.get("under_load") or {}).get("uplink_coverage_pct")
+    expected = (report.get("under_load") or {}).get("uplink_expected_seconds") or 0
+    if coverage is not None and coverage < 50 and expected >= 10:
+        warnings.append(
+            f"The uplink test covered only {up.get('seconds_measured', 0)}s of "
+            f"the roughly {expected}s it should have, which is "
+            f"{coverage:g}% of what the burst schedule delivers on a walk this "
+            "long. It was failing rather than resting, so the uplink figures "
+            "below describe a fraction of the walk. Check the event log for "
+            "what the test said.")
     if quality.get("unsynced_clock_samples"):
         warnings.append(
             f"The clock was not synchronised for "
@@ -954,6 +974,19 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
             "with <em>no stream at all</em> are the severe case, not missing "
             "data: the link failed badly enough that the test itself could not "
             f"stay up.{duty}</p>" + chart_block + "".join(sections))
+    elif load.get("enabled"):
+        # An absent section reads as "nothing to report", which is the
+        # opposite of the truth: the test was switched on and produced
+        # nothing. Somebody noticed this from the outside, having concluded
+        # the section only appears when there is packet loss.
+        load_block = (
+            "<h2>Under a teleop-sized load</h2>"
+            '<div class="empty"><p>The load test was switched on for this run '
+            "and produced no readings at all, in either direction.</p>"
+            f'<p class="sub">Uplink: {_e((load.get("uplink") or {}).get("absent_reason") or "")}</p>'
+            f'<p class="sub">Downlink: {_e((load.get("downlink") or {}).get("absent_reason") or "")}</p>'
+            '<p class="sub">This says nothing about the garage. Check the '
+            "event log for what the test reported.</p></div>")
     else:
         load_block = ""
 
