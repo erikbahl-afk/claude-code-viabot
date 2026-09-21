@@ -610,6 +610,15 @@ a { color: var(--accent); }
 .empty { color: var(--muted); background: var(--card); border: 1px solid var(--line);
          border-radius: 10px; padding: 26px; text-align: center; }
 video { width: 100%; border-radius: 10px; background: #000; }
+/* A quarter turn swaps the picture's width and height, but a CSS transform
+   does not change the layout box, so the wrapper is resized from script or a
+   rotated video overlaps whatever follows it. */
+.vrot { position: relative; overflow: hidden; border-radius: 10px;
+        background: #000; }
+.vrot video { display: block; }
+.videobar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+            margin: 8px 0 0; }
+.videobar .sub { margin: 0; flex: 1 1 18ch; }
 .btn {
   appearance: none; font: inherit; font-weight: 600; cursor: pointer;
   background: var(--card); color: var(--accent);
@@ -627,7 +636,7 @@ footer { color: var(--muted); font-size: 13px; margin-top: 48px;
          border-top: 1px solid var(--line); padding-top: 14px; }
 [hidden] { display: none !important; }
 @media print {
-  .tabs, .tab { display: none; }
+  .tabs, .tab, .videobar { display: none; }
   [role="tabpanel"] { display: block !important; }
   body { background: #fff; }
 }
@@ -664,7 +673,99 @@ SCRIPT = """
       if (!response.ok) return;
       offer.hidden = true;
       player.hidden = false;
+      applyRotation();
     }).catch(function () {});
+  }
+
+  // -- turning the picture ------------------------------------------------
+  //
+  // The camera can be mounted on its side, and footage already recorded
+  // cannot be re-cut: a published report is final by design, and the clips
+  // beside it are the files that were uploaded. So the page offers to turn
+  // it instead, and remembers the choice for the next report opened.
+  //
+  // camera.rotate on the rig fixes this properly for footage not yet
+  // recorded. This is for everything already on the server.
+  var ROT_KEY = 'viabot.videoRotation';
+  var rotation = 0;
+  try { rotation = parseInt(localStorage.getItem(ROT_KEY), 10) || 0; } catch (e) {}
+
+  function layout(video) {
+    var box = video.parentNode;
+    if (rotation % 180 === 0) {
+      video.removeAttribute('style');
+      box.style.height = '';
+      if (rotation) video.style.transform = 'rotate(180deg)';
+      return;
+    }
+    var vw = video.videoWidth, vh = video.videoHeight;
+    var width = box.clientWidth;
+    if (!vw || !vh || !width) return;   // metadata not in yet; loadedmetadata retries
+    // Scale so the picture's height spans the box, then place it so its
+    // centre is the box's centre. After the turn it occupies width x dw.
+    var scale = width / vh, dw = vw * scale, dh = vh * scale;
+    box.style.height = dw + 'px';
+    video.style.position = 'absolute';
+    video.style.width = dw + 'px';
+    video.style.height = dh + 'px';
+    video.style.left = ((width - dw) / 2) + 'px';
+    video.style.top = ((dw - dh) / 2) + 'px';
+    video.style.transform = 'rotate(' + rotation + 'deg)';
+  }
+
+  function applyRotation() {
+    var labels = document.querySelectorAll('[data-rotate-label]');
+    for (var i = 0; i < labels.length; i++) {
+      labels[i].textContent = rotation + '\u00b0';
+    }
+    var videos = document.querySelectorAll('.vrot video');
+    for (var j = 0; j < videos.length; j++) layout(videos[j]);
+  }
+
+  var turners = document.querySelectorAll('[data-rotate]');
+  for (var k = 0; k < turners.length; k++) {
+    turners[k].addEventListener('click', function () {
+      rotation = (rotation + 90) % 360;
+      try { localStorage.setItem(ROT_KEY, rotation); } catch (e) {}
+      applyRotation();
+    });
+  }
+  // Video events do not bubble, so this listens on the way down instead.
+  document.addEventListener('loadedmetadata', applyRotation, true);
+  window.addEventListener('resize', applyRotation);
+  // A hidden tab has no width, so a video on it cannot be measured and the
+  // turn silently does not apply. Registered after the tab handler above, so
+  // the panel is already visible by the time this runs.
+  tabs.forEach(function (t) {
+    t.addEventListener('click', function () { applyRotation(); });
+  });
+  applyRotation();
+
+  // -- clips play on the page ---------------------------------------------
+  //
+  // They stay ordinary links in the markup so the report still works with no
+  // script and off a USB stick. With script they open in a player here, which
+  // is the only way the rotation above can reach them: a clip opened in the
+  // browser's own player is outside this page entirely.
+  var clipBox = document.getElementById('clipPlayer');
+  var clipVideo = document.getElementById('clipVideo');
+  var clipName = document.getElementById('clipName');
+  var clipDownload = document.getElementById('clipDownload');
+  var clips = document.querySelectorAll('[data-clip]');
+  for (var m = 0; m < clips.length; m++) {
+    clips[m].addEventListener('click', function (event) {
+      if (!clipBox || !clipVideo) return;    // leave it as a plain link
+      event.preventDefault();
+      var href = this.getAttribute('href');
+      clipVideo.src = href;
+      if (clipName) clipName.textContent = this.getAttribute('data-clip');
+      if (clipDownload) clipDownload.href = href;
+      clipBox.hidden = false;
+      applyRotation();
+      if (clipBox.scrollIntoView) clipBox.scrollIntoView({ block: 'nearest' });
+      var playing = clipVideo.play();
+      if (playing && playing.catch) playing.catch(function () {});
+    });
   }
 })();
 """
@@ -672,6 +773,18 @@ SCRIPT = """
 
 def _e(value: Any) -> str:
     return html.escape("" if value is None else str(value), quote=True)
+
+
+#: The turn control. Both players carry one and they share a single angle, so
+#: turning the full walk turns the clips too.
+ROTATE_BAR = (
+    '<div class="videobar">'
+    '<button class="btn" type="button" data-rotate>Rotate 90&deg;</button>'
+    '<span class="sub">Turned <span data-rotate-label>0&deg;</span>. This '
+    'changes how the video is shown here, not the file itself, and is '
+    'remembered for the next report you open. The player\'s own buttons turn '
+    'with the picture, which is unavoidable and harmless.</span>'
+    "</div>")
 
 
 def _stat(label: str, value: str) -> str:
@@ -718,8 +831,12 @@ def _dead_zone_rows(zones: Sequence[dict], pre_roll: float, post_roll: float) ->
         clip = zone.get("clip_path")
         if clip:
             name = str(clip).rsplit("/", 1)[-1]
-            link = (f'<a href="{CLIP_DIR}/{_e(name)}">watch '
-                    f'{int(pre_roll)}s before &rarr; {int(post_roll)}s after</a>')
+            # Still a plain link: without script, and off a USB stick, this
+            # is the only thing that works. Script upgrades it to a player on
+            # the page, which is the only way the turn control reaches clips.
+            link = (f'<a href="{CLIP_DIR}/{_e(name)}" data-clip="{_e(name)}">'
+                    f'watch {int(pre_roll)}s before &rarr; '
+                    f'{int(post_roll)}s after</a>')
         else:
             link = f'<span class="muted">{_e(zone.get("clip_error") or "no clip")}</span>'
         loss = zone.get("worst_loss_pct")
@@ -845,6 +962,21 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
         zone_table = ('<div class="empty">No dead zones. The link stayed usable '
                       'for the whole walk.</div>')
 
+    # Revealed by script when a clip is clicked. Hidden and empty otherwise,
+    # so a report read without script never shows a player it cannot fill.
+    if any(z.get("clip_path") for z in zones):
+        clip_player = (
+            '<div id="clipPlayer" hidden>'
+            '<h2>Clip</h2>'
+            '<div class="vrot"><video id="clipVideo" controls '
+            'preload="metadata"></video></div>'
+            + ROTATE_BAR
+            + '<p class="sub"><span id="clipName" class="mono"></span> '
+            '<a id="clipDownload" href="#">Download this clip</a></p>'
+            "</div>")
+    else:
+        clip_player = ""
+
     # -- tab two: the evidence ----------------------------------------------
     #
     # This page is written when the walk ends, and the full recording is
@@ -853,9 +985,10 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
     # carries both answers and asks for the file on load; without script, or
     # opened from a USB stick, it falls back to the offer, which is what it
     # showed before this existed.
-    player = (f'<video controls preload="metadata"{"" if full_video else " "}'
-              f'src="{FULL_VIDEO}"></video>'
-              f'<p class="sub"><a href="{FULL_VIDEO}">Download the full '
+    player = (f'<div class="vrot"><video controls preload="metadata"'
+              f'{"" if full_video else " "}src="{FULL_VIDEO}"></video></div>'
+              + ROTATE_BAR
+              + f'<p class="sub"><a href="{FULL_VIDEO}">Download the full '
               'recording</a></p>')
     offer = (
         '<div class="empty"><p>The full walk recording is still on the rig.</p>'
@@ -1128,6 +1261,7 @@ def render_html(report: dict, *, deadzone_config: dict | None = None,
   <dl class="stats">{stats}</dl>
   <h2>Where the link failed</h2>
   {zone_table}
+  {clip_player}
 </section>
 
 <section id="panel-detail" role="tabpanel" hidden>
